@@ -94,6 +94,17 @@ jobs:
             fi
           done
 
+      - name: Copy deploy compose files
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          port: ${{ env.SSH_PORT || 22 }}
+          source: "docker-compose.deploy.yml,docker-compose.prod.yml"
+          target: "~/${{ steps.vars.outputs.app_name }}/"
+          overwrite: true
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
         env:
@@ -149,63 +160,11 @@ jobs:
             S3_KEY=${S3_KEY}
             S3_SECRET_KEY=${S3_SECRET_KEY}
             S3_BUCKET_NAME=${S3_BUCKET_NAME}
-            EOF
-
-            cat > docker-compose.yml <<EOF
-            services:
-              backend:
-                image: ghcr.io/${REPO}-backend:${TAG}
-                restart: unless-stopped
-                env_file:
-                  - ./.env
-                environment:
-                  POSTGRES_HOST: \${POSTGRES_HOST}
-                  POSTGRES_PORT: \${POSTGRES_PORT}
-                  POSTGRES_USER: \${POSTGRES_USER}
-                  POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
-                  POSTGRES_DB: \${POSTGRES_DB}
-                  TELEGRAM_BOT_TOKEN: \${TELEGRAM_BOT_TOKEN}
-                  TELEGRAM_BOT_USERNAME: \${TELEGRAM_BOT_USERNAME}
-                  TELEGRAM_MINI_APP_SHORT_NAME: \${TELEGRAM_MINI_APP_SHORT_NAME}
-                  JWT_SECRET_KEY: \${JWT_SECRET_KEY}
-                  FRONTEND_BASE_URL: \${FRONTEND_BASE_URL}
-                  S3_KEY: \${S3_KEY}
-                  S3_SECRET_KEY: \${S3_SECRET_KEY}
-                  S3_BUCKET_NAME: \${S3_BUCKET_NAME}
-                ports:
-                  - "127.0.0.1:8000:8000"
-
-              bot:
-                image: ghcr.io/${REPO}-bot:${TAG}
-                restart: unless-stopped
-                env_file:
-                  - ./.env
-                environment:
-                  BOT_TOKEN: \${TELEGRAM_BOT_TOKEN}
-                  TELEGRAM_BOT_USERNAME: \${TELEGRAM_BOT_USERNAME}
-                  TELEGRAM_MINI_APP_SHORT_NAME: \${TELEGRAM_MINI_APP_SHORT_NAME}
-                  BACKEND_BASE_URL: http://backend:8000
-                  BACKEND_BEARER_TOKEN: \${TELEGRAM_BOT_TOKEN}
-                  FRONTEND_BASE_URL: \${FRONTEND_BASE_URL}
-                  S3_KEY: \${S3_KEY}
-                  S3_SECRET_KEY: \${S3_SECRET_KEY}
-                  S3_BUCKET_NAME: \${S3_BUCKET_NAME}
-                depends_on:
-                  - backend
-
-              frontend:
-                image: ghcr.io/${REPO}-frontend:${TAG}
-                restart: unless-stopped
-                environment:
-                  VITE_API_BASE_URL: \${VITE_API_BASE_URL:-/api}
-                  VITE_API_PROXY_TARGET: http://backend:8000
-                ports:
-                  - "127.0.0.1:5173:5173"
-                depends_on:
-                  - backend
+            REPO=${REPO}
+            TAG=${TAG}
             EOF
 
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker compose ps
+            docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --env-file .env pull
+            docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --env-file .env up -d --remove-orphans
+            docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --env-file .env ps
