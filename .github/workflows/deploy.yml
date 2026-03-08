@@ -173,7 +173,7 @@ jobs:
                   S3_SECRET_KEY: \${S3_SECRET_KEY}
                   S3_BUCKET_NAME: \${S3_BUCKET_NAME}
                 ports:
-                  - "8000:8000"
+                  - "127.0.0.1:8000:8000"
 
               bot:
                 image: ghcr.io/${REPO}-bot:${TAG}
@@ -200,7 +200,7 @@ jobs:
                   VITE_API_BASE_URL: \${VITE_API_BASE_URL:-/api}
                   VITE_API_PROXY_TARGET: http://backend:8000
                 ports:
-                  - "5173:5173"
+                  - "127.0.0.1:5173:5173"
                 depends_on:
                   - backend
             EOF
