@@ -1,0 +1,211 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment"
+        type: choice
+        required: true
+        options:
+          - dev
+          - prod
+        default: dev
+      tag:
+        description: "Image tag to deploy. Empty = latest semver tag"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    env:
+      SSH_HOST: ${{ vars.SSH_HOST }}
+      SSH_USER: ${{ vars.SSH_USER }}
+      SSH_PORT: ${{ vars.SSH_PORT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
+      POSTGRES_HOST: ${{ vars.POSTGRES_HOST }}
+      POSTGRES_PORT: ${{ vars.POSTGRES_PORT }}
+      POSTGRES_USER: ${{ vars.POSTGRES_USER }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      POSTGRES_DB: ${{ vars.POSTGRES_DB }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_BOT_USERNAME: ${{ vars.TELEGRAM_BOT_USERNAME }}
+      TELEGRAM_MINI_APP_SHORT_NAME: ${{ vars.TELEGRAM_MINI_APP_SHORT_NAME }}
+      JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+      FRONTEND_BASE_URL: ${{ vars.FRONTEND_BASE_URL }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      S3_KEY: ${{ vars.S3_KEY }}
+      S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+      S3_BUCKET_NAME: ${{ vars.S3_BUCKET_NAME }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve deploy variables
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            git fetch --tags --force >/dev/null 2>&1 || true
+            tag="$(git tag -l | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)"
+            [ -n "$tag" ] || { echo "No semver tags found"; exit 1; }
+          fi
+
+          repo="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+          app_name="${repo##*/}"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
+
+      - name: Validate required deploy secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required=(
+            SSH_HOST SSH_USER SSH_PRIVATE_KEY
+            GHCR_USERNAME GHCR_TOKEN
+            POSTGRES_HOST POSTGRES_PORT POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB
+            TELEGRAM_BOT_TOKEN JWT_SECRET_KEY FRONTEND_BASE_URL
+            S3_KEY S3_SECRET_KEY S3_BUCKET_NAME
+          )
+
+          for key in "${required[@]}"; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing required secret: $key" >&2
+              exit 1
+            fi
+          done
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          APP_NAME: ${{ steps.vars.outputs.app_name }}
+          REPO: ${{ steps.vars.outputs.repo }}
+          TAG: ${{ steps.vars.outputs.tag }}
+          GHCR_USERNAME: ${{ env.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ env.GHCR_TOKEN }}
+          POSTGRES_HOST: ${{ env.POSTGRES_HOST }}
+          POSTGRES_PORT: ${{ env.POSTGRES_PORT }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          TELEGRAM_BOT_TOKEN: ${{ env.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_USERNAME: ${{ env.TELEGRAM_BOT_USERNAME }}
+          TELEGRAM_MINI_APP_SHORT_NAME: ${{ env.TELEGRAM_MINI_APP_SHORT_NAME }}
+          JWT_SECRET_KEY: ${{ env.JWT_SECRET_KEY }}
+          FRONTEND_BASE_URL: ${{ env.FRONTEND_BASE_URL }}
+          VITE_API_BASE_URL: ${{ env.VITE_API_BASE_URL }}
+          S3_KEY: ${{ env.S3_KEY }}
+          S3_SECRET_KEY: ${{ env.S3_SECRET_KEY }}
+          S3_BUCKET_NAME: ${{ env.S3_BUCKET_NAME }}
+        with:
+          host: ${{ env.SSH_HOST }}
+          username: ${{ env.SSH_USER }}
+          key: ${{ env.SSH_PRIVATE_KEY }}
+          port: ${{ env.SSH_PORT || 22 }}
+          envs: >
+            APP_NAME,REPO,TAG,GHCR_USERNAME,GHCR_TOKEN,
+            POSTGRES_HOST,POSTGRES_PORT,POSTGRES_USER,POSTGRES_PASSWORD,POSTGRES_DB,
+            TELEGRAM_BOT_TOKEN,TELEGRAM_BOT_USERNAME,TELEGRAM_MINI_APP_SHORT_NAME,
+            JWT_SECRET_KEY,FRONTEND_BASE_URL,VITE_API_BASE_URL,
+            S3_KEY,S3_SECRET_KEY,S3_BUCKET_NAME
+          script: |
+            set -euo pipefail
+
+            deploy_dir="$HOME/$APP_NAME"
+            mkdir -p "$deploy_dir"
+            cd "$deploy_dir"
+
+            cat > .env <<EOF
+            POSTGRES_HOST=${POSTGRES_HOST}
+            POSTGRES_PORT=${POSTGRES_PORT}
+            POSTGRES_USER=${POSTGRES_USER}
+            POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+            POSTGRES_DB=${POSTGRES_DB}
+            TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+            TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME}
+            TELEGRAM_MINI_APP_SHORT_NAME=${TELEGRAM_MINI_APP_SHORT_NAME}
+            JWT_SECRET_KEY=${JWT_SECRET_KEY}
+            FRONTEND_BASE_URL=${FRONTEND_BASE_URL}
+            VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}
+            S3_KEY=${S3_KEY}
+            S3_SECRET_KEY=${S3_SECRET_KEY}
+            S3_BUCKET_NAME=${S3_BUCKET_NAME}
+            EOF
+
+            cat > docker-compose.yml <<EOF
+            services:
+              backend:
+                image: ghcr.io/${REPO}-backend:${TAG}
+                restart: unless-stopped
+                env_file:
+                  - ./.env
+                environment:
+                  POSTGRES_HOST: \${POSTGRES_HOST}
+                  POSTGRES_PORT: \${POSTGRES_PORT}
+                  POSTGRES_USER: \${POSTGRES_USER}
+                  POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+                  POSTGRES_DB: \${POSTGRES_DB}
+                  TELEGRAM_BOT_TOKEN: \${TELEGRAM_BOT_TOKEN}
+                  TELEGRAM_BOT_USERNAME: \${TELEGRAM_BOT_USERNAME}
+                  TELEGRAM_MINI_APP_SHORT_NAME: \${TELEGRAM_MINI_APP_SHORT_NAME}
+                  JWT_SECRET_KEY: \${JWT_SECRET_KEY}
+                  FRONTEND_BASE_URL: \${FRONTEND_BASE_URL}
+                  S3_KEY: \${S3_KEY}
+                  S3_SECRET_KEY: \${S3_SECRET_KEY}
+                  S3_BUCKET_NAME: \${S3_BUCKET_NAME}
+                ports:
+                  - "8000:8000"
+
+              bot:
+                image: ghcr.io/${REPO}-bot:${TAG}
+                restart: unless-stopped
+                env_file:
+                  - ./.env
+                environment:
+                  BOT_TOKEN: \${TELEGRAM_BOT_TOKEN}
+                  TELEGRAM_BOT_USERNAME: \${TELEGRAM_BOT_USERNAME}
+                  TELEGRAM_MINI_APP_SHORT_NAME: \${TELEGRAM_MINI_APP_SHORT_NAME}
+                  BACKEND_BASE_URL: http://backend:8000
+                  BACKEND_BEARER_TOKEN: \${TELEGRAM_BOT_TOKEN}
+                  FRONTEND_BASE_URL: \${FRONTEND_BASE_URL}
+                  S3_KEY: \${S3_KEY}
+                  S3_SECRET_KEY: \${S3_SECRET_KEY}
+                  S3_BUCKET_NAME: \${S3_BUCKET_NAME}
+                depends_on:
+                  - backend
+
+              frontend:
+                image: ghcr.io/${REPO}-frontend:${TAG}
+                restart: unless-stopped
+                environment:
+                  VITE_API_BASE_URL: \${VITE_API_BASE_URL:-/api}
+                  VITE_API_PROXY_TARGET: http://backend:8000
+                ports:
+                  - "5173:5173"
+                depends_on:
+                  - backend
+            EOF
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker compose ps
