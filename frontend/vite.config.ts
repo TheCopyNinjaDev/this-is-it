@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       host: "0.0.0.0",
+      allowedHosts: ["eto-znak.site", "www.eto-znak.site"],
       proxy: {
         "/api": {
           target: proxyTarget,
