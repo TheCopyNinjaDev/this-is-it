@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7
     TELEGRAM_INIT_DATA_TTL_SECONDS: int = 3600
     FRONTEND_BASE_URL: str = "http://localhost:5173"
+    ADMIN_USERNAME: str | None = None
+    ADMIN_PASSWORD: SecretStr | None = None
     S3_KEY: SecretStr | None = None
     S3_SECRET_KEY: SecretStr | None = None
     S3_BUCKET_NAME: str | None = None

@@ -1457,11 +1457,17 @@ function App() {
               <span>{room.participants_count < room.max_participants ? "Ждём второго человека" : "Можно начинать"}</span>
             </div>
           </div>
-          <p className="lobby-copy">Пригласи человека через Telegram, а дальше комната обновится сама в реальном времени.</p>
-          <button className="action action--share" onClick={shareInviteLink}>
-            <span className="action__svg"><IconShare /></span>
-            <span>Пригласить в Telegram</span>
-          </button>
+          <p className="lobby-copy">
+            {room.participants_count < room.max_participants
+              ? "Пригласи человека через Telegram, а дальше комната обновится сама в реальном времени."
+              : "Оба участника уже внутри. Можно переходить к выбору идей."}
+          </p>
+          {room.participants_count < room.max_participants ? (
+            <button className="action action--share" onClick={shareInviteLink}>
+              <span className="action__svg"><IconShare /></span>
+              <span>Пригласить в Telegram</span>
+            </button>
+          ) : null}
           <div className="participants-grid">
             {room.participants.map((participant) => (
               <div key={participant.user_id} className="participant-card">
