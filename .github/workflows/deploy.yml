@@ -101,7 +101,7 @@ jobs:
           username: ${{ env.SSH_USER }}
           key: ${{ env.SSH_PRIVATE_KEY }}
           port: ${{ env.SSH_PORT || 22 }}
-          source: "docker-compose.deploy.yml,docker-compose.prod.yml"
+          source: "docker-compose.prod.yml"
           target: "~/${{ steps.vars.outputs.app_name }}/"
           overwrite: true
 
@@ -165,6 +165,6 @@ jobs:
             EOF
 
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
-            docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --env-file .env pull
-            docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --env-file .env up -d --remove-orphans
-            docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --env-file .env ps
+            docker compose -f docker-compose.prod.yml --env-file .env pull
+            docker compose -f docker-compose.prod.yml --env-file .env up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml --env-file .env ps
