@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from typing import Any
 from uuid import UUID
 
@@ -42,6 +43,7 @@ from src.ws_manager import room_connection_manager
 
 CUSTOM_DATE_SERVICE_CODE = "custom_date_generation"
 CUSTOM_DATE_SERVICE_NAME = "Кастомное свидание"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -559,6 +561,15 @@ class RoomService:
             payload=self._payment_payload(room.id),
             amount_stars=int(room.custom_price_stars or 0),
         )
+        logger.info(
+            "Created custom payment invoice",
+            extra={
+                "room_id": str(room.id),
+                "creator_user_id": room.creator_user_id,
+                "requested_by_user_id": user_id,
+                "price_stars": int(room.custom_price_stars or 0),
+            },
+        )
         return CustomPaymentLinkResponse(
             invoice_url=invoice_url,
             price_stars=int(room.custom_price_stars or 0),
@@ -611,6 +622,16 @@ class RoomService:
             room.custom_paid_at = datetime.now(timezone.utc)
             room.custom_payment_charge_id = request.telegram_payment_charge_id
             await self.room_repository.save_room(room)
+            logger.info(
+                "Confirmed custom payment",
+                extra={
+                    "room_id": str(room.id),
+                    "creator_user_id": room.creator_user_id,
+                    "paid_by_user_id": request.user_id,
+                    "amount": request.amount,
+                    "currency": request.currency,
+                },
+            )
             await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
         return await self._room_response(room_id)
 

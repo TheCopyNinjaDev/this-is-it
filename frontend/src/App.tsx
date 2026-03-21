@@ -1088,21 +1088,52 @@ function App() {
     setGallerySort("newest");
   }, [galleryOpen]);
 
-  async function waitForCustomPayment() {
+  function logPaymentDebug(event: string, payload?: unknown) {
+    console.info(`[custom-payment] ${event}`, payload);
+  }
+
+  async function waitForCustomPayment(
+    options?: {
+      attempts?: number;
+      delayMs?: number;
+      throwOnTimeout?: boolean;
+    },
+  ) {
     if (!token || !roomId) {
-      return;
+      return false;
     }
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    const attempts = options?.attempts ?? 10;
+    const delayMs = options?.delayMs ?? 1500;
+    const throwOnTimeout = options?.throwOnTimeout ?? true;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const nextRoom = await api<Room>(`/rooms/${roomId}`, token);
       setRoom(nextRoom);
       if (nextRoom.custom_payment_paid) {
-        return;
+        logPaymentDebug("payment-confirmed", { attempt: attempt + 1 });
+        return true;
       }
-      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
     }
 
-    throw new Error("Платёж не подтвердился автоматически. Открой комнату ещё раз через пару секунд.");
+    logPaymentDebug("payment-confirmation-timeout", { attempts, delayMs });
+    if (throwOnTimeout) {
+      throw new Error("Платёж не подтвердился автоматически. Открой комнату ещё раз через пару секунд.");
+    }
+    return false;
+  }
+
+  async function syncCustomPaymentInBackground() {
+    try {
+      await waitForCustomPayment({
+        attempts: 30,
+        delayMs: 2000,
+        throwOnTimeout: false,
+      });
+    } catch (requestError) {
+      console.error("[custom-payment] background-sync-failed", requestError);
+    }
   }
 
   async function startRoom(flowType: "catalog" | "custom") {
@@ -1156,32 +1187,67 @@ function App() {
 
     setBusy(true);
     try {
+      logPaymentDebug("requesting-invoice-link", {
+        roomId,
+        hasOpenInvoice: Boolean(webApp?.openInvoice),
+        hasOpenTelegramLink: Boolean(webApp?.openTelegramLink),
+        hasOpenLink: Boolean(webApp?.openLink),
+      });
+
       const invoice = await api<CustomPaymentLinkResponse>(`/rooms/${roomId}/custom/payment-link`, token, {
         method: "POST",
       });
+      logPaymentDebug("invoice-link-created", {
+        roomId,
+        priceStars: invoice.price_stars,
+      });
 
       if (webApp?.openInvoice) {
-        await new Promise<void>((resolve, reject) => {
+        const invoiceStatus = await new Promise<string>((resolve, reject) => {
+          const timeoutId = window.setTimeout(() => {
+            resolve("timeout");
+          }, 25000);
+
           webApp.openInvoice?.(invoice.invoice_url, (invoiceStatus) => {
+            window.clearTimeout(timeoutId);
+            logPaymentDebug("open-invoice-callback", { invoiceStatus });
             if (invoiceStatus === "paid") {
-              resolve();
+              resolve(invoiceStatus);
               return;
             }
             if (invoiceStatus === "cancelled") {
               reject(new Error("Оплата отменена"));
               return;
             }
-            reject(new Error(`Не удалось завершить оплату: ${invoiceStatus}`));
+            resolve(invoiceStatus);
           });
         });
-      } else if (webApp?.openTelegramLink) {
-        webApp.openTelegramLink(invoice.invoice_url);
-      } else {
-        window.open(invoice.invoice_url, "_blank", "noopener,noreferrer");
-      }
 
-      await waitForCustomPayment();
+        if (invoiceStatus === "paid") {
+          await waitForCustomPayment({
+            attempts: 20,
+            delayMs: 1500,
+            throwOnTimeout: true,
+          });
+        } else {
+          logPaymentDebug("open-invoice-without-immediate-paid-status", { invoiceStatus });
+          void syncCustomPaymentInBackground();
+        }
+      } else if (webApp?.openLink) {
+        logPaymentDebug("open-link-fallback");
+        webApp.openLink(invoice.invoice_url, { try_instant_view: false });
+        void syncCustomPaymentInBackground();
+      } else if (webApp?.openTelegramLink) {
+        logPaymentDebug("open-telegram-link-fallback");
+        webApp.openTelegramLink(invoice.invoice_url);
+        void syncCustomPaymentInBackground();
+      } else {
+        logPaymentDebug("window-open-fallback");
+        window.open(invoice.invoice_url, "_blank", "noopener,noreferrer");
+        void syncCustomPaymentInBackground();
+      }
     } catch (requestError) {
+      console.error("[custom-payment] payment-flow-failed", requestError);
       setError(requestError instanceof Error ? requestError.message : "Не удалось оплатить генерацию");
     } finally {
       setBusy(false);
