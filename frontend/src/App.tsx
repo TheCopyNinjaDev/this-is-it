@@ -602,6 +602,9 @@ function App() {
   const [swipeState, setSwipeState] = useState<SwipeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [customPreferenceBusy, setCustomPreferenceBusy] = useState(false);
+  const [customPaymentBusy, setCustomPaymentBusy] = useState(false);
+  const [customGenerationBusy, setCustomGenerationBusy] = useState(false);
   const [error, setError] = useState("");
   const [socketVersion, setSocketVersion] = useState(0);
   const [showMatchBurst, setShowMatchBurst] = useState(false);
@@ -1166,7 +1169,7 @@ function App() {
       return;
     }
 
-    setBusy(true);
+    setCustomPreferenceBusy(true);
     try {
       const nextRoom = await api<Room>(`/rooms/${roomId}/custom/preferences`, token, {
         method: "POST",
@@ -1176,7 +1179,7 @@ function App() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Не удалось сохранить пожелания");
     } finally {
-      setBusy(false);
+      setCustomPreferenceBusy(false);
     }
   }
 
@@ -1185,7 +1188,7 @@ function App() {
       return;
     }
 
-    setBusy(true);
+    setCustomPaymentBusy(true);
     try {
       logPaymentDebug("requesting-invoice-link", {
         roomId,
@@ -1203,54 +1206,61 @@ function App() {
       });
 
       if (webApp?.openInvoice) {
-        const invoiceStatus = await new Promise<string>((resolve, reject) => {
-          const timeoutId = window.setTimeout(() => {
-            resolve("timeout");
-          }, 25000);
+        let callbackReceived = false;
+        webApp.openInvoice?.(invoice.invoice_url, (invoiceStatus) => {
+          callbackReceived = true;
+          logPaymentDebug("open-invoice-callback", { invoiceStatus });
+          setCustomPaymentBusy(false);
 
-          webApp.openInvoice?.(invoice.invoice_url, (invoiceStatus) => {
-            window.clearTimeout(timeoutId);
-            logPaymentDebug("open-invoice-callback", { invoiceStatus });
-            if (invoiceStatus === "paid") {
-              resolve(invoiceStatus);
-              return;
-            }
-            if (invoiceStatus === "cancelled") {
-              reject(new Error("Оплата отменена"));
-              return;
-            }
-            resolve(invoiceStatus);
-          });
+          if (invoiceStatus === "paid") {
+            void waitForCustomPayment({
+              attempts: 20,
+              delayMs: 1500,
+              throwOnTimeout: true,
+            }).catch((requestError) => {
+              console.error("[custom-payment] payment-confirmation-failed", requestError);
+              setError(requestError instanceof Error ? requestError.message : "Платёж не подтвердился автоматически");
+            });
+            return;
+          }
+
+          if (invoiceStatus === "cancelled") {
+            logPaymentDebug("payment-cancelled");
+            setError("Оплата отменена");
+            return;
+          }
+
+          void syncCustomPaymentInBackground();
         });
 
-        if (invoiceStatus === "paid") {
-          await waitForCustomPayment({
-            attempts: 20,
-            delayMs: 1500,
-            throwOnTimeout: true,
-          });
-        } else {
-          logPaymentDebug("open-invoice-without-immediate-paid-status", { invoiceStatus });
-          void syncCustomPaymentInBackground();
-        }
+        window.setTimeout(() => {
+          if (callbackReceived) {
+            return;
+          }
+          logPaymentDebug("invoice-open-handed-off");
+          setCustomPaymentBusy(false);
+        }, 1200);
       } else if (webApp?.openLink) {
         logPaymentDebug("open-link-fallback");
         webApp.openLink(invoice.invoice_url, { try_instant_view: false });
+        setCustomPaymentBusy(false);
         void syncCustomPaymentInBackground();
       } else if (webApp?.openTelegramLink) {
         logPaymentDebug("open-telegram-link-fallback");
         webApp.openTelegramLink(invoice.invoice_url);
+        setCustomPaymentBusy(false);
         void syncCustomPaymentInBackground();
       } else {
         logPaymentDebug("window-open-fallback");
         window.open(invoice.invoice_url, "_blank", "noopener,noreferrer");
+        setCustomPaymentBusy(false);
         void syncCustomPaymentInBackground();
       }
     } catch (requestError) {
       console.error("[custom-payment] payment-flow-failed", requestError);
       setError(requestError instanceof Error ? requestError.message : "Не удалось оплатить генерацию");
     } finally {
-      setBusy(false);
+      setCustomPaymentBusy(false);
     }
   }
 
@@ -1259,7 +1269,7 @@ function App() {
       return;
     }
 
-    setBusy(true);
+    setCustomGenerationBusy(true);
     try {
       const nextRoom = await api<Room>(`/rooms/${roomId}/custom/generate`, token, {
         method: "POST",
@@ -1269,7 +1279,7 @@ function App() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Не удалось сгенерировать варианты");
     } finally {
-      setBusy(false);
+      setCustomGenerationBusy(false);
     }
   }
 
@@ -1844,8 +1854,8 @@ function App() {
           </div>
 
           <>
-              <label className="prompt-field">
-                <span className="eyebrow">Твой запрос</span>
+              <div className="prompt-field">
+                <span className="eyebrow prompt-field__label">Твой запрос</span>
                 <textarea
                   className="prompt-field__input"
                   value={customPrompt}
@@ -1853,27 +1863,37 @@ function App() {
                   placeholder="Например: хочется что-то уютное вечером, без громких мест, с вином и красивым маршрутом"
                   rows={5}
                 />
-              </label>
+              </div>
               <div className="actions actions--stacked">
                 <button
                   className="action action--launch"
-                  disabled={busy || customPrompt.trim().length < 5}
+                  disabled={customPreferenceBusy || customPaymentBusy || customGenerationBusy || customPrompt.trim().length < 5}
                   onClick={() => void submitCustomPreference()}
                 >
                   <span className="action__svg"><IconSpark /></span>
-                  <span>{busy ? "Сохраняем..." : currentCustomPreference ? "Обновить пожелания" : "Отправить пожелания"}</span>
+                  <span>
+                    {customPreferenceBusy ? "Сохраняем..." : currentCustomPreference ? "Обновить пожелания" : "Отправить пожелания"}
+                  </span>
                 </button>
                 {isCustomCreator && allCustomPromptsSubmitted && room.custom_payment_required && !room.custom_payment_paid ? (
-                  <button className="action action--ghost" disabled={busy} onClick={() => void payForCustomGeneration()}>
+                  <button
+                    className="action action--ghost"
+                    disabled={customPreferenceBusy || customPaymentBusy || customGenerationBusy}
+                    onClick={() => void payForCustomGeneration()}
+                  >
                     <span className="action__svg"><IconHeart /></span>
-                    <span>{busy ? "Открываем счёт..." : `Оплатить ${room.custom_price_stars ?? 0} Stars`}</span>
+                    <span>{customPaymentBusy ? "Открываем счёт..." : `Оплатить ${room.custom_price_stars ?? 0} Stars`}</span>
                   </button>
                 ) : null}
                 {isCustomCreator && allCustomPromptsSubmitted && (!room.custom_payment_required || room.custom_payment_paid) ? (
-                  <button className="action action--ghost" disabled={busy} onClick={() => void generateCustomIdeas()}>
+                  <button
+                    className="action action--ghost"
+                    disabled={customPreferenceBusy || customPaymentBusy || customGenerationBusy}
+                    onClick={() => void generateCustomIdeas()}
+                  >
                     <span className="action__svg"><IconIdea /></span>
                     <span>
-                      {busy
+                      {customGenerationBusy
                         ? "Собираем варианты..."
                         : room.custom_status === "needs_refinement"
                           ? "Уточнили, попробовать ещё раз"

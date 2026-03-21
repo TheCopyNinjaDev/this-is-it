@@ -501,12 +501,22 @@ svg {
   display: grid;
   gap: 8px;
   margin: 10px 0 14px;
+  width: 100%;
+  min-width: 0;
 }
 
-.prompt-field textarea {
+.prompt-field__label {
+  display: block;
+}
+
+.prompt-field__input {
   width: 100%;
+  inline-size: 100%;
   max-width: 100%;
   display: block;
+  box-sizing: border-box;
+  min-width: 0;
+  align-self: stretch;
   resize: vertical;
   border: 0;
   border-radius: 22px;
@@ -523,17 +533,16 @@ svg {
   -webkit-appearance: none;
   -webkit-text-size-adjust: 100%;
   overflow: auto;
+  transform: translateZ(0);
 }
 
-.prompt-field textarea:focus {
+.prompt-field__input:focus {
   outline: 2px solid rgba(122, 97, 201, 0.24);
   outline-offset: 2px;
 }
 
 .prompt-field__input {
-  width: 100%;
-  max-width: 100%;
-  display: block;
+  margin: 0;
 }
 
 .waiting-banner {
