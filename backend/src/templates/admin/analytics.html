@@ -1,0 +1,165 @@
+{% extends "sqladmin/layout.html" %}
+
+{% block head %}
+{{ super() }}
+<style>
+  .metric-card {
+    min-height: 132px;
+  }
+
+  .metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+
+  .chart-card {
+    min-height: 420px;
+  }
+
+  .chart-wrap {
+    position: relative;
+    height: 320px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+{% for metric in metrics %}
+<div class="col-sm-6 col-lg-3">
+  <div class="card metric-card">
+    <div class="card-body">
+      <div class="text-secondary text-uppercase mb-2">{{ metric.label }}</div>
+      <div class="metric-value mb-2">{{ metric.value }}</div>
+      <div class="text-secondary">{{ metric.hint }}</div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<div class="col-12 col-xxl-6">
+  <div class="card chart-card">
+    <div class="card-header">
+      <h3 class="card-title">Новые пользователи за 30 дней</h3>
+    </div>
+    <div class="card-body">
+      <div class="chart-wrap">
+        <canvas id="registrations-chart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="col-12 col-xxl-6">
+  <div class="card chart-card">
+    <div class="card-header">
+      <h3 class="card-title">Активная база пользователей за 90 дней</h3>
+    </div>
+    <div class="card-body">
+      <div class="chart-wrap">
+        <canvas id="active-users-chart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="col-12">
+  <div class="card chart-card">
+    <div class="card-header">
+      <h3 class="card-title">Недельный прирост пользователей за 12 недель</h3>
+    </div>
+    <div class="card-body">
+      <div class="chart-wrap">
+        <canvas id="weekly-growth-chart"></canvas>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block tail %}
+{{ super() }}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+<script>
+  const registrationsLabels = {{ registrations_labels_json | safe }};
+  const registrationsValues = {{ registrations_values_json | safe }};
+  const activeLabels = {{ active_labels_json | safe }};
+  const activeValues = {{ active_values_json | safe }};
+  const weeklyLabels = {{ weekly_labels_json | safe }};
+  const weeklyValues = {{ weekly_values_json | safe }};
+
+  const axisColor = "#6c7a91";
+  const gridColor = "rgba(98, 105, 118, 0.16)";
+
+  function baseOptions() {
+    return {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        x: {
+          ticks: { color: axisColor, maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+          grid: { color: gridColor, drawBorder: false }
+        },
+        y: {
+          beginAtZero: true,
+          ticks: { color: axisColor, precision: 0 },
+          grid: { color: gridColor, drawBorder: false }
+        }
+      }
+    };
+  }
+
+  new Chart(document.getElementById("registrations-chart"), {
+    type: "bar",
+    data: {
+      labels: registrationsLabels,
+      datasets: [{
+        label: "Новые пользователи",
+        data: registrationsValues,
+        backgroundColor: "#2f6fed",
+        borderRadius: 6
+      }]
+    },
+    options: baseOptions()
+  });
+
+  new Chart(document.getElementById("active-users-chart"), {
+    type: "line",
+    data: {
+      labels: activeLabels,
+      datasets: [{
+        label: "Активные пользователи",
+        data: activeValues,
+        borderColor: "#0f9d58",
+        backgroundColor: "rgba(15, 157, 88, 0.16)",
+        fill: true,
+        tension: 0.28,
+        pointRadius: 0
+      }]
+    },
+    options: baseOptions()
+  });
+
+  new Chart(document.getElementById("weekly-growth-chart"), {
+    type: "line",
+    data: {
+      labels: weeklyLabels,
+      datasets: [{
+        label: "Новые пользователи по неделям",
+        data: weeklyValues,
+        borderColor: "#f76707",
+        backgroundColor: "rgba(247, 103, 7, 0.15)",
+        fill: true,
+        tension: 0.24,
+        pointRadius: 3,
+        pointBackgroundColor: "#f76707"
+      }]
+    },
+    options: baseOptions()
+  });
+</script>
+{% endblock %}
