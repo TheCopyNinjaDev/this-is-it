@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from sqlalchemy import and_, func, insert, literal, select
@@ -214,12 +214,20 @@ class RoomRepository:
             await self.session.refresh(room)
         return room
 
-    async def set_room_status(self, room_id: UUID, status: str, matched_idea_id: int | None = None) -> None:
+    async def set_room_status(
+        self,
+        room_id: UUID,
+        status: str,
+        matched_idea_id: int | None = None,
+        shuffle_seed: UUID | None = None,
+    ) -> None:
         room = await self.get_room(room_id)
         if room is None:
             return
 
         room.status = status
+        if status == "active":
+            room.shuffle_seed = shuffle_seed or room.shuffle_seed or uuid4()
         if matched_idea_id is not None:
             room.matched_idea_id = matched_idea_id
         if status == "matched":
@@ -239,12 +247,13 @@ class RoomRepository:
             )
             .subquery()
         )
-        # Keep a stable but different deck order for each user inside each room.
+        room = await self.get_room(room_id)
+        shuffle_seed = room.shuffle_seed if room is not None and room.shuffle_seed is not None else room_id
+
+        # Keep a stable shared deck order for everyone inside the room.
         shuffle_key = func.md5(
             func.concat(
-                sa.literal(str(room_id)),
-                ":",
-                sa.literal(str(user_id)),
+                sa.literal(str(shuffle_seed)),
                 ":",
                 func.cast(DateIdea.id, sa.Text),
             )

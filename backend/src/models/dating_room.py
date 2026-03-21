@@ -26,5 +26,6 @@ class DatingRoom(Base, TimestampMixin):
     )
     matched_at: Mapped[datetime | None] = mapped_column(pg.TIMESTAMP(timezone=True), nullable=True)
     match_revealed_at: Mapped[datetime | None] = mapped_column(pg.TIMESTAMP(timezone=True), nullable=True)
+    shuffle_seed: Mapped[uuid.UUID | None] = mapped_column(pg.UUID(as_uuid=True), nullable=True)
     memory_photo_key: Mapped[str | None] = mapped_column(sa.String(512), nullable=True)
     memory_postcard_key: Mapped[str | None] = mapped_column(sa.String(512), nullable=True)
