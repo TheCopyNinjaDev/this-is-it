@@ -22,6 +22,7 @@ type TelegramWebApp = {
   expand: () => void;
   openTelegramLink?: (url: string) => void;
   openLink?: (url: string, options?: { try_instant_view?: boolean }) => void;
+  openInvoice?: (url: string, callback?: (status: string) => void) => void;
   close?: () => void;
   requestFullscreen?: () => void;
   disableVerticalSwipes?: () => void;
@@ -34,11 +35,28 @@ type Participant = {
 };
 
 type Idea = {
-  id: number;
+  id: number | string;
   title: string;
   description: string;
   category: string;
   vibe: string;
+  reason?: string;
+};
+
+type GeneratedIdeaVote = {
+  user_id: number;
+  liked: boolean;
+};
+
+type GeneratedIdea = Idea & {
+  votes: GeneratedIdeaVote[];
+};
+
+type CustomPreference = {
+  user_id: number;
+  name: string;
+  prompt: string;
+  submitted_at: string;
 };
 
 type Room = {
@@ -58,6 +76,14 @@ type Room = {
   postcard_url: string | null;
   memories: RoomMemory[];
   matched_idea: Idea | null;
+  matched_generated_idea: GeneratedIdea | null;
+  flow_type: string | null;
+  custom_status: string | null;
+  custom_price_stars: number | null;
+  custom_payment_required: boolean;
+  custom_payment_paid: boolean;
+  custom_preferences: CustomPreference[];
+  generated_ideas: GeneratedIdea[];
 };
 
 type RoomMemory = {
@@ -80,6 +106,11 @@ type SwipeState = {
   matched: boolean;
   matched_idea: Idea | null;
   next_idea: Idea | null;
+};
+
+type CustomPaymentLinkResponse = {
+  invoice_url: string;
+  price_stars: number;
 };
 
 type SwipeCardProps = {
@@ -144,6 +175,10 @@ async function api<T>(path: string, token: string, init?: RequestInit): Promise<
   }
 
   return response.json() as Promise<T>;
+}
+
+function usesCatalogFlow(room: Room | null): boolean {
+  return Boolean(room && room.status !== "waiting" && room.flow_type !== "custom" && room.status !== "matched");
 }
 
 function IconHeart() {
@@ -571,6 +606,8 @@ function App() {
   const [socketVersion, setSocketVersion] = useState(0);
   const [showMatchBurst, setShowMatchBurst] = useState(false);
   const [matchRevealed, setMatchRevealed] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [startModeChooserOpen, setStartModeChooserOpen] = useState(false);
   const [openedMemory, setOpenedMemory] = useState<RoomMemory | null>(null);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryOwnerFilter, setGalleryOwnerFilter] = useState<GalleryOwnerFilter>("all");
@@ -589,7 +626,7 @@ function App() {
         .map((memory) => ({
           ...memory,
           room_id: completedRoom.id,
-          idea_title: completedRoom.matched_idea?.title ?? "Идея для свидания",
+          idea_title: completedRoom.matched_generated_idea?.title ?? completedRoom.matched_idea?.title ?? "Идея для свидания",
         })),
     );
   }, [rooms]);
@@ -801,7 +838,7 @@ function App() {
         setRoom(joinedRoom);
         setRooms(null);
 
-        if (joinedRoom.status !== "waiting") {
+        if (usesCatalogFlow(joinedRoom)) {
           const next = await api<SwipeState>(`/rooms/${roomId}/ideas/next`, token);
           setSwipeState(next);
         } else {
@@ -852,7 +889,7 @@ function App() {
     const nextRoom = await api<Room>(`/rooms/${roomId}`, token);
     setRoom(nextRoom);
 
-    if (nextRoom.status !== "waiting") {
+    if (usesCatalogFlow(nextRoom)) {
       const next = await api<SwipeState>(`/rooms/${roomId}/ideas/next`, token);
       setSwipeState(next);
     } else {
@@ -956,6 +993,28 @@ function App() {
 
   const isCurrentUserCreator =
     room?.participants.some((participant) => participant.user_id === currentTelegramUserId && participant.is_creator) ?? false;
+  const currentCustomPreference =
+    room?.custom_preferences.find((preference) => preference.user_id === currentTelegramUserId) ?? null;
+  const currentCustomOption =
+    room?.generated_ideas.find((option) => !option.votes.some((vote) => vote.user_id === currentTelegramUserId)) ?? null;
+  const allCustomPromptsSubmitted = (room?.participants_count ?? 0) === 2 && (room?.custom_preferences.length ?? 0) >= 2;
+  const matchedDisplayIdea = swipeState?.matched_idea ?? room?.matched_generated_idea ?? room?.matched_idea ?? null;
+  const isCustomCreator = Boolean(room && room.flow_type === "custom" && isCurrentUserCreator);
+  const submittedPreferencesCount = room?.custom_preferences.length ?? 0;
+
+  useEffect(() => {
+    if (room?.flow_type !== "custom") {
+      setCustomPrompt("");
+      return;
+    }
+    setCustomPrompt(currentCustomPreference?.prompt ?? "");
+  }, [currentCustomPreference?.prompt, room?.flow_type, roomId]);
+
+  useEffect(() => {
+    if (room?.status !== "waiting") {
+      setStartModeChooserOpen(false);
+    }
+  }, [room?.status, roomId]);
 
   useEffect(() => {
     if (!token || !roomId || room?.status === "matched") {
@@ -993,7 +1052,7 @@ function App() {
   }, [room?.status, roomId, token, socketVersion]);
 
   useEffect(() => {
-    const matchedIdeaId = swipeState?.matched_idea?.id ?? room?.matched_idea?.id ?? null;
+    const matchedIdeaId = swipeState?.matched_idea?.id ?? room?.matched_generated_idea?.id ?? room?.matched_idea?.id ?? null;
     if (!matchedIdeaId) {
       celebratedMatchRef.current = null;
       setShowMatchBurst(false);
@@ -1013,12 +1072,12 @@ function App() {
     window.setTimeout(() => {
       setShowMatchBurst(false);
     }, 1800);
-  }, [room?.matched_idea?.id, roomId, swipeState?.matched_idea?.id, webApp]);
+  }, [room?.matched_generated_idea?.id, room?.matched_idea?.id, roomId, swipeState?.matched_idea?.id, webApp]);
 
   useEffect(() => {
     setMatchRevealed(Boolean(room?.match_revealed_at));
     setOpenedMemory(null);
-  }, [roomId, room?.match_revealed_at, room?.matched_idea?.id, swipeState?.matched_idea?.id]);
+  }, [roomId, room?.match_revealed_at, room?.matched_generated_idea?.id, room?.matched_idea?.id, swipeState?.matched_idea?.id]);
 
   useEffect(() => {
     if (!galleryOpen) {
@@ -1029,7 +1088,24 @@ function App() {
     setGallerySort("newest");
   }, [galleryOpen]);
 
-  async function startRoom() {
+  async function waitForCustomPayment() {
+    if (!token || !roomId) {
+      return;
+    }
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const nextRoom = await api<Room>(`/rooms/${roomId}`, token);
+      setRoom(nextRoom);
+      if (nextRoom.custom_payment_paid) {
+        return;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+
+    throw new Error("Платёж не подтвердился автоматически. Открой комнату ещё раз через пару секунд.");
+  }
+
+  async function startRoom(flowType: "catalog" | "custom") {
     if (!token || !roomId) {
       return;
     }
@@ -1038,13 +1114,113 @@ function App() {
     try {
       const nextRoom = await api<Room>(`/rooms/${roomId}/start`, token, {
         method: "POST",
+        body: JSON.stringify({ flow_type: flowType }),
+      });
+      setRoom(nextRoom);
+      if (usesCatalogFlow(nextRoom)) {
+        const next = await api<SwipeState>(`/rooms/${roomId}/ideas/next`, token);
+        setSwipeState(next);
+      } else {
+        setSwipeState(null);
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось начать выбор");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitCustomPreference() {
+    if (!token || !roomId) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const nextRoom = await api<Room>(`/rooms/${roomId}/custom/preferences`, token, {
+        method: "POST",
+        body: JSON.stringify({ prompt: customPrompt }),
+      });
+      setRoom(nextRoom);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось сохранить пожелания");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function payForCustomGeneration() {
+    if (!token || !roomId) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const invoice = await api<CustomPaymentLinkResponse>(`/rooms/${roomId}/custom/payment-link`, token, {
+        method: "POST",
+      });
+
+      if (webApp?.openInvoice) {
+        await new Promise<void>((resolve, reject) => {
+          webApp.openInvoice?.(invoice.invoice_url, (invoiceStatus) => {
+            if (invoiceStatus === "paid") {
+              resolve();
+              return;
+            }
+            if (invoiceStatus === "cancelled") {
+              reject(new Error("Оплата отменена"));
+              return;
+            }
+            reject(new Error(`Не удалось завершить оплату: ${invoiceStatus}`));
+          });
+        });
+      } else if (webApp?.openTelegramLink) {
+        webApp.openTelegramLink(invoice.invoice_url);
+      } else {
+        window.open(invoice.invoice_url, "_blank", "noopener,noreferrer");
+      }
+
+      await waitForCustomPayment();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось оплатить генерацию");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateCustomIdeas() {
+    if (!token || !roomId) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const nextRoom = await api<Room>(`/rooms/${roomId}/custom/generate`, token, {
+        method: "POST",
         body: JSON.stringify({}),
       });
       setRoom(nextRoom);
-      const next = await api<SwipeState>(`/rooms/${roomId}/ideas/next`, token);
-      setSwipeState(next);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Не удалось начать выбор");
+      setError(requestError instanceof Error ? requestError.message : "Не удалось сгенерировать варианты");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function voteCustomIdea(liked: boolean) {
+    if (!token || !roomId || !currentCustomOption) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const nextRoom = await api<Room>(`/rooms/${roomId}/custom/votes`, token, {
+        method: "POST",
+        body: JSON.stringify({ option_id: currentCustomOption.id, liked }),
+      });
+      setRoom(nextRoom);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось сохранить выбор");
     } finally {
       setBusy(false);
     }
@@ -1164,7 +1340,7 @@ function App() {
                 <HomeRoomCard
                   key={completedRoom.id}
                   room={completedRoom}
-                  title={completedRoom.matched_idea?.title ?? "Идея для свидания"}
+                  title={completedRoom.matched_generated_idea?.title ?? completedRoom.matched_idea?.title ?? "Идея для свидания"}
                   subtitle={`Мэтч от ${formatMatchDate(completedRoom.matched_at ?? completedRoom.updated_at)}`}
                   onOpen={openRoom}
                 />
@@ -1282,7 +1458,7 @@ function App() {
   }
 
   if (room.status === "matched" || swipeState?.matched) {
-    const idea = swipeState?.matched_idea ?? room.matched_idea;
+    const idea = matchedDisplayIdea;
     if (!idea) {
       return null;
     }
@@ -1434,6 +1610,33 @@ function App() {
   }
 
   if (room.status === "waiting") {
+    if (room.can_start && isCurrentUserCreator && startModeChooserOpen) {
+      return (
+        <main className="shell shell--compact">
+          <header className="hero">
+            <p className="hero__tag">Старт комнаты</p>
+            <h1>Как будем искать идею?</h1>
+            <p>Можно пойти по готовой колоде или собрать персональные варианты под ваши пожелания.</p>
+          </header>
+          <section className="glass-panel home-panel">
+            <div className="actions actions--stacked">
+              <button className="action action--launch" disabled={busy} onClick={() => void startRoom("catalog")}>
+                <span className="action__svg"><IconSpark /></span>
+                <span>{busy ? "Открываем колоду..." : "Выбрать из колоды"}</span>
+              </button>
+              <button className="action action--ghost" disabled={busy} onClick={() => void startRoom("custom")}>
+                <span className="action__svg"><IconIdea /></span>
+                <span>{busy ? "Открываем сценарий..." : "Создать своё свидание"}</span>
+              </button>
+              <button className="action action--ghost" disabled={busy} onClick={() => setStartModeChooserOpen(false)}>
+                <span>Назад</span>
+              </button>
+            </div>
+          </section>
+        </main>
+      );
+    }
+
     return (
       <main className="shell shell--compact">
         <header className="hero">
@@ -1480,9 +1683,9 @@ function App() {
             ))}
           </div>
           {room.can_start && isCurrentUserCreator ? (
-            <button className="action action--launch" disabled={busy} onClick={() => void startRoom()}>
+            <button className="action action--launch" disabled={busy} onClick={() => setStartModeChooserOpen(true)}>
               <span className="action__svg"><IconSpark /></span>
-              <span>{busy ? "Открываем колоду..." : "Начать выбор"}</span>
+              <span>{busy ? "Подготавливаем..." : "Выбрать формат"}</span>
             </button>
           ) : (
             <div className="waiting-banner">
@@ -1494,6 +1697,146 @@ function App() {
               </span>
             </div>
           )}
+        </section>
+      </main>
+    );
+  }
+
+  if (room.flow_type === "custom" && room.status === "active") {
+    if (room.custom_status === "generating") {
+      return (
+        <main className="shell shell--loading custom-loading-shell">
+          <section className="glass-panel glass-panel--centered custom-loading-panel">
+            <div className="loading-star custom-loading-star">
+              <IconSpark />
+            </div>
+            <p className="eyebrow">Собираем ваши варианты</p>
+            <h1>Ищем идеи, которые подойдут вам обоим</h1>
+            <p>Это займёт немного времени. Как только всё будет готово, комната обновится сама.</p>
+            <div className="custom-loading-orbits">
+              <span />
+              <span />
+              <span />
+            </div>
+          </section>
+        </main>
+      );
+    }
+
+    if (room.custom_status === "ready" && currentCustomOption) {
+      return (
+        <main className="shell shell--deck shell--compact">
+          <header className="hero hero--deck">
+            <p className="hero__tag">Своё свидание</p>
+            <h1>Выбери, что откликается.</h1>
+            <p>Вправо, если нравится. Влево, если не подходит.</p>
+          </header>
+          <SwipeCard busy={busy} idea={currentCustomOption} onSwipe={(liked) => void voteCustomIdea(liked)} />
+        </main>
+      );
+    }
+
+    if (room.custom_status === "ready") {
+      return (
+        <main className="shell shell--loading">
+          <section className="glass-panel glass-panel--centered">
+            <p className="eyebrow">Ваш раунд</p>
+            <h1>Ждём выбор партнёра</h1>
+            <p>Ты уже просмотрел все варианты этого раунда. Как только второй человек закончит, комната обновится сама.</p>
+          </section>
+        </main>
+      );
+    }
+
+    const customStatusText =
+      room.custom_status === "needs_refinement"
+          ? "Нужны уточнения"
+          : "Собираем пожелания";
+
+    return (
+      <main className="shell shell--compact">
+        <header className="hero">
+          <p className="hero__tag">Своё свидание</p>
+          <h1>Соберите сценарий под вас двоих.</h1>
+          <p>Оба участника описывают, чего им хочется, а затем вы вместе выбираете из 10 персональных вариантов.</p>
+        </header>
+        <section className="glass-panel lobby-panel">
+          <div className="lobby-panel__halo lobby-panel__halo--left" />
+          <div className="lobby-panel__halo lobby-panel__halo--right" />
+          <div className="section-head section-head--top">
+            <span className={`room-badge room-badge--${room.status}`}>{customStatusText}</span>
+            {room.custom_price_stars && isCustomCreator ? (
+              <span className="status-chip">
+                <IconSpark />
+                <span>{room.custom_price_stars} Stars</span>
+              </span>
+            ) : null}
+          </div>
+          <div className="waiting-banner">
+            <span className="waiting-banner__pulse" />
+            <span>Пожелания отправили: {submittedPreferencesCount}/{room.participants_count}</span>
+          </div>
+
+          <>
+              <label className="prompt-field">
+                <span className="eyebrow">Твой запрос</span>
+                <textarea
+                  value={customPrompt}
+                  onChange={(event) => setCustomPrompt(event.target.value)}
+                  placeholder="Например: хочется что-то уютное вечером, без громких мест, с вином и красивым маршрутом"
+                  rows={5}
+                />
+              </label>
+              <div className="actions actions--stacked">
+                <button
+                  className="action action--launch"
+                  disabled={busy || customPrompt.trim().length < 5}
+                  onClick={() => void submitCustomPreference()}
+                >
+                  <span className="action__svg"><IconSpark /></span>
+                  <span>{busy ? "Сохраняем..." : currentCustomPreference ? "Обновить пожелания" : "Отправить пожелания"}</span>
+                </button>
+                {isCustomCreator && allCustomPromptsSubmitted && room.custom_payment_required && !room.custom_payment_paid ? (
+                  <button className="action action--ghost" disabled={busy} onClick={() => void payForCustomGeneration()}>
+                    <span className="action__svg"><IconHeart /></span>
+                    <span>{busy ? "Открываем счёт..." : `Оплатить ${room.custom_price_stars ?? 0} Stars`}</span>
+                  </button>
+                ) : null}
+                {isCustomCreator && allCustomPromptsSubmitted && (!room.custom_payment_required || room.custom_payment_paid) ? (
+                  <button className="action action--ghost" disabled={busy} onClick={() => void generateCustomIdeas()}>
+                    <span className="action__svg"><IconIdea /></span>
+                    <span>
+                      {busy
+                        ? "Собираем варианты..."
+                        : room.custom_status === "needs_refinement"
+                          ? "Уточнили, попробовать ещё раз"
+                          : "Сгенерировать 10 вариантов"}
+                    </span>
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="waiting-banner">
+                <span className="waiting-banner__pulse" />
+                <span>
+                  {room.custom_status === "needs_refinement"
+                      ? "Ни один вариант не совпал. Уточните, чего хочется или чего точно не хочется, и попробуйте снова."
+                      : !currentCustomPreference
+                        ? submittedPreferencesCount > 0
+                          ? "Один участник уже отправил пожелания. Теперь твоя очередь."
+                          : "Опиши, какое свидание тебе хочется, и отправь пожелания."
+                        : submittedPreferencesCount < room.participants_count
+                          ? "Пожелания отправлены. Теперь ждём второго участника."
+                        : room.custom_payment_required && !room.custom_payment_paid
+                            ? isCustomCreator
+                              ? "Пожелания собраны. Теперь можно оплатить генерацию."
+                              : "Пожелания собраны. Ждём, пока создатель комнаты оплатит генерацию."
+                            : isCustomCreator
+                              ? "Пожелания собраны. Теперь можно запускать варианты."
+                              : "Пожелания собраны. Ждём, пока создатель комнаты запустит генерацию."}
+                </span>
+              </div>
+          </>
         </section>
       </main>
     );

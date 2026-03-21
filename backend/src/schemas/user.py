@@ -8,6 +8,13 @@ class UserResponse(BaseModel):
     is_deleted: bool
 
 
+class UserListItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+
+
 class UserCreate(BaseModel):
     id: int
     name: str

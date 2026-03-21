@@ -13,6 +13,7 @@ from src.models.dating_room import DatingRoom
 from src.models.dating_room_memory import DatingRoomMemory
 from src.models.dating_room_participant import DatingRoomParticipant
 from src.models.dating_room_swipe import DatingRoomSwipe
+from src.models.service_config import ServiceConfig
 from src.models.user import User
 
 
@@ -68,6 +69,20 @@ class RoomRepository:
         await self.session.execute(insert(DateIdea), DEFAULT_DATE_IDEAS)
         await self.session.commit()
 
+    async def get_service_config(self, service_code: str) -> ServiceConfig | None:
+        return await self.session.get(ServiceConfig, service_code)
+
+    async def ensure_service_config(self, *, service_code: str, name: str) -> ServiceConfig:
+        config = await self.get_service_config(service_code)
+        if config is not None:
+            return config
+
+        config = ServiceConfig(code=service_code, name=name)
+        self.session.add(config)
+        await self.session.commit()
+        await self.session.refresh(config)
+        return config
+
     async def create_room(self, *, creator_user_id: int) -> DatingRoom:
         room = DatingRoom(creator_user_id=creator_user_id)
         self.session.add(room)
@@ -85,6 +100,12 @@ class RoomRepository:
 
     async def get_room(self, room_id: UUID) -> DatingRoom | None:
         return await self.session.get(DatingRoom, room_id)
+
+    async def save_room(self, room: DatingRoom) -> DatingRoom:
+        self.session.add(room)
+        await self.session.commit()
+        await self.session.refresh(room)
+        return room
 
     async def get_rooms_for_user(self, user_id: int) -> list[DatingRoom]:
         stmt = (
@@ -232,6 +253,8 @@ class RoomRepository:
             room.matched_idea_id = matched_idea_id
         if status == "matched":
             room.matched_at = datetime.now(timezone.utc)
+        if status != "matched":
+            room.matched_at = None
         await self.session.commit()
         await self.session.refresh(room)
 

@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     S3_BUCKET_NAME: str | None = None
     S3_ENDPOINT_URL: str = "https://storage.yandexcloud.net"
     S3_REGION: str = "ru-central1"
+    OPENROUTER_API_KEY: SecretStr | None = None
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_MODEL: str = "qwen/qwen3-30b-a3b"
 
     @property
     def DATABASE_URL_asyncpg(self) -> str:

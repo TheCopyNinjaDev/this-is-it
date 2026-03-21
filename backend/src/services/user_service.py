@@ -1,5 +1,5 @@
 from src.repositories.user_repo import UserRepository
-from src.schemas.user import UserCreate, UserPatch, UserResponse, UserUpdate
+from src.schemas.user import UserCreate, UserListItemResponse, UserPatch, UserResponse, UserUpdate
 
 class UserService:
     def __init__(self, user_repository: UserRepository):
@@ -54,3 +54,13 @@ class UserService:
 
         await self.repository.soft_delete(user_id)
         return True
+
+    async def list_active_users(self) -> list[UserListItemResponse]:
+        users = await self.repository.list_active_users()
+        return [
+            UserListItemResponse(
+                id=user.id,
+                name=user.name,
+            )
+            for user in users
+        ]

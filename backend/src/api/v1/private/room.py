@@ -5,6 +5,12 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, s
 from src.auth import decode_access_token
 from src.api.deps import AuthContext, get_auth_context, get_room_service
 from src.schemas.room import (
+    CustomGenerateRequest,
+    CustomPaymentConfirmRequest,
+    CustomPaymentLinkResponse,
+    CustomPaymentValidateRequest,
+    CustomPreferenceRequest,
+    CustomVoteRequest,
     RoomCreateRequest,
     RoomLeaveRequest,
     RoomJoinRequest,
@@ -120,6 +126,65 @@ async def start_room(
     auth: AuthContext = Depends(get_auth_context),
 ) -> RoomResponse:
     return await service.start_room(room_id, request, auth)
+
+
+@router.post("/{room_id}/custom/preferences", response_model=RoomResponse)
+async def submit_custom_preference(
+    room_id: UUID,
+    request: CustomPreferenceRequest,
+    service: RoomService = Depends(get_room_service),
+    auth: AuthContext = Depends(get_auth_context),
+) -> RoomResponse:
+    return await service.submit_custom_preference(room_id, request, auth)
+
+
+@router.post("/{room_id}/custom/payment-link", response_model=CustomPaymentLinkResponse)
+async def create_custom_payment_link(
+    room_id: UUID,
+    service: RoomService = Depends(get_room_service),
+    auth: AuthContext = Depends(get_auth_context),
+) -> CustomPaymentLinkResponse:
+    return await service.create_custom_payment_link(room_id, auth)
+
+
+@router.post("/{room_id}/custom/payment/validate", status_code=status.HTTP_204_NO_CONTENT)
+async def validate_custom_payment(
+    room_id: UUID,
+    request: CustomPaymentValidateRequest,
+    service: RoomService = Depends(get_room_service),
+    auth: AuthContext = Depends(get_auth_context),
+) -> None:
+    await service.validate_custom_payment(room_id, request, auth)
+
+
+@router.post("/{room_id}/custom/payment/confirm", response_model=RoomResponse)
+async def confirm_custom_payment(
+    room_id: UUID,
+    request: CustomPaymentConfirmRequest,
+    service: RoomService = Depends(get_room_service),
+    auth: AuthContext = Depends(get_auth_context),
+) -> RoomResponse:
+    return await service.confirm_custom_payment(room_id, request, auth)
+
+
+@router.post("/{room_id}/custom/generate", response_model=RoomResponse)
+async def generate_custom_options(
+    room_id: UUID,
+    request: CustomGenerateRequest,
+    service: RoomService = Depends(get_room_service),
+    auth: AuthContext = Depends(get_auth_context),
+) -> RoomResponse:
+    return await service.generate_custom_options(room_id, request, auth)
+
+
+@router.post("/{room_id}/custom/votes", response_model=RoomResponse)
+async def vote_custom_option(
+    room_id: UUID,
+    request: CustomVoteRequest,
+    service: RoomService = Depends(get_room_service),
+    auth: AuthContext = Depends(get_auth_context),
+) -> RoomResponse:
+    return await service.vote_custom_option(room_id, request, auth)
 
 
 @router.get("/{room_id}/ideas/next", response_model=SwipeResultResponse)

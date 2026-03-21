@@ -19,7 +19,9 @@ from src.db.session import engine
 from src.models.dating_room import DatingRoom
 from src.models.dating_room_participant import DatingRoomParticipant
 from src.models.date_idea import DateIdea
+from src.models.service_config import ServiceConfig
 from src.models.user import User
+from src.models.user_service_grant import UserServiceGrant
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +120,58 @@ class UserAdmin(ModelView, model=User):
     ]
     column_default_sort = (User.created_at, True)
     page_size = 25
+
+
+class ServiceConfigAdmin(ModelView, model=ServiceConfig):
+    name = "Услуга"
+    name_plural = "Услуги"
+    icon = "fa-solid fa-sliders"
+    can_delete = False
+
+    column_list = [
+        ServiceConfig.code,
+        ServiceConfig.name,
+        ServiceConfig.price_stars,
+    ]
+    form_columns = [
+        ServiceConfig.code,
+        ServiceConfig.name,
+        ServiceConfig.price_stars,
+    ]
+    column_searchable_list = [
+        ServiceConfig.code,
+        ServiceConfig.name,
+    ]
+    column_labels = {
+        ServiceConfig.code: "Код услуги",
+        ServiceConfig.name: "Название",
+        ServiceConfig.price_stars: "Цена, Stars",
+    }
+
+
+class UserServiceGrantAdmin(ModelView, model=UserServiceGrant):
+    name = "Льгота"
+    name_plural = "Льготы по услугам"
+    icon = "fa-solid fa-gift"
+
+    column_list = [
+        UserServiceGrant.id,
+        UserServiceGrant.user,
+        UserServiceGrant.service,
+        UserServiceGrant.created_at,
+    ]
+    column_searchable_list = [
+        UserServiceGrant.user_id,
+        UserServiceGrant.service_code,
+    ]
+    form_columns = [
+        UserServiceGrant.user,
+        UserServiceGrant.service,
+    ]
+    column_labels = {
+        UserServiceGrant.user: "Пользователь",
+        UserServiceGrant.service: "Услуга",
+    }
 
 
 class AnalyticsAdmin(BaseView):
@@ -328,6 +382,8 @@ def setup_admin(app: FastAPI) -> None:
         title="This Is It Admin",
         templates_dir=str(TEMPLATES_DIR),
     )
+    admin.add_view(ServiceConfigAdmin)
+    admin.add_view(UserServiceGrantAdmin)
     admin.add_view(AnalyticsAdmin)
     admin.add_view(DateIdeaAdmin)
     admin.add_view(UserAdmin)

@@ -3,6 +3,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.user import User
+from src.models.user_service_grant import UserServiceGrant
 
 class UserRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -37,11 +38,35 @@ class UserRepository:
         result = await self.session.execute(stmt)
 
         return result.scalar_one_or_none()
+
+    async def get_many(self, user_ids: list[int]) -> list[User]:
+        if not user_ids:
+            return []
+
+        stmt = select(User).where(User.id.in_(user_ids))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def has_any_service_grant(self, user_ids: list[int], service_code: str) -> bool:
+        if not user_ids:
+            return False
+
+        stmt = select(UserServiceGrant.id).where(
+            UserServiceGrant.user_id.in_(user_ids),
+            UserServiceGrant.service_code == service_code,
+        ).limit(1)
+        return bool(await self.session.scalar(stmt))
+
+    async def list_active_users(self) -> list[User]:
+        stmt = select(User).where(User.deleted_at.is_(None)).order_by(User.created_at.asc(), User.id.asc())
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
     
     async def update(
         self,
         id: int,
         name: str | None = None,
+        free_custom_date_generation: bool | None = None,
     ) -> User | None:
         user = await self.get(id)
         if not user:
@@ -49,6 +74,8 @@ class UserRepository:
 
         if name is not None:
             user.name = name
+        if free_custom_date_generation is not None:
+            user.free_custom_date_generation = free_custom_date_generation
 
 
         await self.session.commit()

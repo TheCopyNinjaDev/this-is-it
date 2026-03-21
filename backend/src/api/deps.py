@@ -15,6 +15,8 @@ from src.repositories.user_repo import UserRepository
 from src.storage import ObjectStorage
 
 from src.services.room_service import RoomService
+from src.services.openrouter_service import OpenRouterDateGenerator
+from src.services.telegram_billing_service import TelegramBillingService
 from src.services.user_service import UserService
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -66,6 +68,15 @@ async def get_room_service(
         frontend_base_url=settings.FRONTEND_BASE_URL,
         telegram_bot_username=settings.TELEGRAM_BOT_USERNAME,
         telegram_mini_app_short_name=settings.TELEGRAM_MINI_APP_SHORT_NAME,
+        openrouter_generator=OpenRouterDateGenerator(
+            api_key=settings.OPENROUTER_API_KEY.get_secret_value() if settings.OPENROUTER_API_KEY else None,
+            model=settings.OPENROUTER_MODEL,
+            base_url=settings.OPENROUTER_BASE_URL,
+        ),
+        telegram_billing=TelegramBillingService(
+            bot_token=settings.TELEGRAM_BOT_TOKEN.get_secret_value(),
+            bot_username=settings.TELEGRAM_BOT_USERNAME,
+        ),
     )
 
 async def require_bearer_token(

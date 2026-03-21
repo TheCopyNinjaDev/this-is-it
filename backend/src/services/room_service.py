@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -9,7 +10,16 @@ from fastapi import HTTPException, status
 from src.repositories.room_repo import RoomRepository
 from src.repositories.user_repo import UserRepository
 from src.schemas.room import (
+    CustomGenerateRequest,
+    CustomPaymentConfirmRequest,
+    CustomPaymentLinkResponse,
+    CustomPaymentValidateRequest,
+    CustomPreferenceRequest,
+    CustomPreferenceResponse,
+    CustomVoteRequest,
     DateIdeaResponse,
+    GeneratedIdeaResponse,
+    GeneratedIdeaVoteResponse,
     ParticipantResponse,
     RoomCreateRequest,
     RoomLeaveRequest,
@@ -25,8 +35,13 @@ from src.schemas.room import (
     SwipeRequest,
     SwipeResultResponse,
 )
+from src.services.openrouter_service import OpenRouterDateGenerator
+from src.services.telegram_billing_service import TelegramBillingService
 from src.storage import ObjectStorage
 from src.ws_manager import room_connection_manager
+
+CUSTOM_DATE_SERVICE_CODE = "custom_date_generation"
+CUSTOM_DATE_SERVICE_NAME = "Кастомное свидание"
 
 
 @dataclass
@@ -44,6 +59,8 @@ class RoomService:
         frontend_base_url: str,
         telegram_bot_username: str | None = None,
         telegram_mini_app_short_name: str | None = None,
+        openrouter_generator: OpenRouterDateGenerator | None = None,
+        telegram_billing: TelegramBillingService | None = None,
     ):
         self.room_repository = room_repository
         self.user_repository = user_repository
@@ -53,6 +70,8 @@ class RoomService:
         self.telegram_mini_app_short_name = (
             telegram_mini_app_short_name.strip("/").lower() if telegram_mini_app_short_name else None
         )
+        self.openrouter_generator = openrouter_generator
+        self.telegram_billing = telegram_billing
 
     def _invite_url(self, room_id: UUID) -> str:
         if self.telegram_bot_username:
@@ -113,6 +132,44 @@ class RoomService:
             vibe=idea.vibe,
         )
 
+    @staticmethod
+    def _custom_payment_required(room: Any, *, has_free_generation: bool = False) -> bool:
+        return bool(room.custom_price_stars and room.custom_price_stars > 0 and not has_free_generation)
+
+    @staticmethod
+    def _parse_datetime(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        return datetime.fromisoformat(value)
+
+    @staticmethod
+    def _payment_payload(room_id: UUID) -> str:
+        return f"custom_date:{room_id}"
+
+    async def _room_has_free_custom_generation(self, room_id: UUID) -> bool:
+        participants = await self.room_repository.get_room_participants(room_id)
+        return await self.user_repository.has_any_service_grant(
+            [user_id for user_id, _ in participants],
+            CUSTOM_DATE_SERVICE_CODE,
+        )
+
+    def _generated_idea_response(self, option: dict[str, Any], votes: list[dict[str, Any]]) -> GeneratedIdeaResponse:
+        return GeneratedIdeaResponse(
+            id=str(option["id"]),
+            title=str(option["title"]),
+            description=str(option["description"]),
+            category=str(option["category"]),
+            vibe=str(option["vibe"]),
+            reason=str(option.get("reason", "")),
+            votes=[
+                GeneratedIdeaVoteResponse(
+                    user_id=int(vote["user_id"]),
+                    liked=bool(vote["liked"]),
+                )
+                for vote in votes
+            ],
+        )
+
     async def _room_response(self, room_id: UUID) -> RoomResponse:
         room = await self._require_room(room_id)
         return await self._room_response_from_model(room)
@@ -120,6 +177,7 @@ class RoomService:
     async def _room_response_from_model(self, room) -> RoomResponse:
         participants = await self.room_repository.get_room_participants(room.id)
         memories = await self.room_repository.get_room_memories(room.id)
+        participant_name_by_id = {user_id: name for user_id, name in participants}
         matched_idea = None
         if room.matched_idea_id is not None:
             matched_idea = await self.room_repository.get_idea(room.matched_idea_id)
@@ -136,6 +194,34 @@ class RoomService:
             )
             for memory, uploaded_by_name in memories
         ]
+
+        custom_votes_by_option: dict[str, list[dict[str, Any]]] = {}
+        for vote in room.custom_votes or []:
+            option_id = str(vote["option_id"])
+            custom_votes_by_option.setdefault(option_id, []).append(vote)
+
+        custom_preferences = [
+            CustomPreferenceResponse(
+                user_id=int(item["user_id"]),
+                name=participant_name_by_id.get(int(item["user_id"]), "Участник"),
+                prompt=str(item["prompt"]),
+                submitted_at=self._parse_datetime(str(item.get("submitted_at"))) or room.updated_at,
+            )
+            for item in room.custom_preferences or []
+        ]
+        generated_ideas = [
+            self._generated_idea_response(option, custom_votes_by_option.get(str(option["id"]), []))
+            for option in room.custom_options or []
+        ]
+        matched_generated_idea = (
+            self._generated_idea_response(
+                room.custom_matched_option,
+                custom_votes_by_option.get(str(room.custom_matched_option["id"]), []),
+            )
+            if room.custom_matched_option
+            else None
+        )
+        has_free_generation = await self._room_has_free_custom_generation(room.id) if room.flow_type == "custom" else False
 
         return RoomResponse(
             id=room.id,
@@ -160,6 +246,14 @@ class RoomService:
             invite_url=self._invite_url(room.id),
             photo_upload_url=self._photo_upload_url(),
             matched_idea=self._idea_response(matched_idea),
+            matched_generated_idea=matched_generated_idea,
+            flow_type=room.flow_type,
+            custom_status=room.custom_status,
+            custom_price_stars=room.custom_price_stars,
+            custom_payment_required=self._custom_payment_required(room, has_free_generation=has_free_generation),
+            custom_payment_paid=room.custom_paid_at is not None or not self._custom_payment_required(room, has_free_generation=has_free_generation),
+            custom_preferences=custom_preferences,
+            generated_ideas=generated_ideas,
         )
 
     async def list_rooms(self, auth: AuthContext) -> RoomListResponse:
@@ -314,8 +408,39 @@ class RoomService:
         if room.status != "waiting":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room already started")
 
-        await self.room_repository.ensure_default_ideas()
-        await self.room_repository.set_room_status(room_id, "active")
+        if request.flow_type == "catalog":
+            room.flow_type = "catalog"
+            room.custom_status = None
+            room.custom_price_stars = None
+            room.custom_paid_at = None
+            room.custom_payment_charge_id = None
+            room.custom_preferences = []
+            room.custom_options = []
+            room.custom_votes = []
+            room.custom_matched_option = None
+            await self.room_repository.save_room(room)
+            await self.room_repository.ensure_default_ideas()
+            await self.room_repository.set_room_status(room_id, "active")
+        else:
+            config = await self.room_repository.ensure_service_config(
+                service_code=CUSTOM_DATE_SERVICE_CODE,
+                name=CUSTOM_DATE_SERVICE_NAME,
+            )
+            room.status = "active"
+            room.flow_type = "custom"
+            room.custom_status = "collecting_preferences"
+            room.custom_price_stars = config.price_stars
+            room.custom_paid_at = None
+            room.custom_payment_charge_id = None
+            room.custom_generation_round = 0
+            room.custom_preferences = []
+            room.custom_options = []
+            room.custom_votes = []
+            room.custom_matched_option = None
+            room.matched_idea_id = None
+            room.matched_at = None
+            room.match_revealed_at = None
+            await self.room_repository.save_room(room)
         await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
         return await self._room_response(room_id)
 
@@ -330,8 +455,9 @@ class RoomService:
 
         next_idea = None
         if room.status == "active":
-            await self.room_repository.ensure_default_ideas()
-            next_idea = await self.room_repository.get_next_unswiped_idea(room_id, user_id)
+            if room.flow_type == "catalog":
+                await self.room_repository.ensure_default_ideas()
+                next_idea = await self.room_repository.get_next_unswiped_idea(room_id, user_id)
 
         return SwipeResultResponse(
             room_status=room.status,
@@ -347,6 +473,8 @@ class RoomService:
 
         if room.status != "active":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is not active")
+        if room.flow_type != "catalog":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room uses custom generation flow")
 
         idea = await self.room_repository.get_idea(request.idea_id)
         if idea is None:
@@ -374,3 +502,233 @@ class RoomService:
             matched_idea=self._idea_response(matched_idea),
             next_idea=self._idea_response(next_idea),
         )
+
+    async def submit_custom_preference(
+        self,
+        room_id: UUID,
+        request: CustomPreferenceRequest,
+        auth: AuthContext,
+    ) -> RoomResponse:
+        user_id = self._resolve_user_id(auth, request.user_id)
+        room = await self._require_room(room_id)
+        await self._require_participant(room_id, user_id)
+        if room.flow_type != "custom" or room.status != "active":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is not in custom generation mode")
+
+        preferences = [item for item in (room.custom_preferences or []) if int(item["user_id"]) != user_id]
+        preferences.append(
+            {
+                "user_id": user_id,
+                "prompt": request.prompt.strip(),
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        preferences.sort(key=lambda item: int(item["user_id"]))
+        room.custom_preferences = preferences
+        if room.custom_status == "needs_refinement":
+            room.custom_status = "collecting_preferences"
+        await self.room_repository.save_room(room)
+        await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
+        return await self._room_response(room_id)
+
+    async def create_custom_payment_link(self, room_id: UUID, auth: AuthContext) -> CustomPaymentLinkResponse:
+        if self.telegram_billing is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Telegram billing is not configured")
+
+        room = await self._require_room(room_id)
+        user_id = self._resolve_user_id(auth, None)
+        await self._require_participant(room_id, user_id)
+        if not auth.is_service and user_id != room.creator_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the room creator can pay for this service",
+            )
+        has_free_generation = await self._room_has_free_custom_generation(room_id)
+        if room.flow_type != "custom" or room.status != "active":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is not in custom generation mode")
+        if len(room.custom_preferences or []) < 2:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Both participants must submit their prompts first")
+        if not self._custom_payment_required(room, has_free_generation=has_free_generation):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom generation is free for this room")
+        if room.custom_paid_at is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom generation is already paid")
+
+        invoice_url = await self.telegram_billing.create_stars_invoice_link(
+            title="Своё свидание",
+            description="10 персональных идей свидания, собранных под вас обоих",
+            payload=self._payment_payload(room.id),
+            amount_stars=int(room.custom_price_stars or 0),
+        )
+        return CustomPaymentLinkResponse(
+            invoice_url=invoice_url,
+            price_stars=int(room.custom_price_stars or 0),
+        )
+
+    async def validate_custom_payment(
+        self,
+        room_id: UUID,
+        request: CustomPaymentValidateRequest,
+        auth: AuthContext,
+    ) -> None:
+        if not auth.is_service:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only service requests can validate payments")
+
+        room = await self._require_room(room_id)
+        has_free_generation = await self._room_has_free_custom_generation(room_id)
+        if request.user_id != room.creator_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the room creator can pay for this service",
+            )
+        if request.payload != self._payment_payload(room.id):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payment payload")
+        if request.currency != "XTR":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported currency")
+        if not self._custom_payment_required(room, has_free_generation=has_free_generation):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room does not require payment")
+        if request.amount != int(room.custom_price_stars or 0):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payment amount")
+        await self._require_participant(room_id, request.user_id)
+
+    async def confirm_custom_payment(
+        self,
+        room_id: UUID,
+        request: CustomPaymentConfirmRequest,
+        auth: AuthContext,
+    ) -> RoomResponse:
+        await self.validate_custom_payment(
+            room_id,
+            CustomPaymentValidateRequest(
+                user_id=request.user_id,
+                payload=request.payload,
+                amount=request.amount,
+                currency=request.currency,
+            ),
+            auth,
+        )
+        room = await self._require_room(room_id)
+        if room.custom_paid_at is None:
+            room.custom_paid_at = datetime.now(timezone.utc)
+            room.custom_payment_charge_id = request.telegram_payment_charge_id
+            await self.room_repository.save_room(room)
+            await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
+        return await self._room_response(room_id)
+
+    async def generate_custom_options(
+        self,
+        room_id: UUID,
+        request: CustomGenerateRequest,
+        auth: AuthContext,
+    ) -> RoomResponse:
+        user_id = self._resolve_user_id(auth, request.user_id)
+        room = await self._require_room(room_id)
+        await self._require_participant(room_id, user_id)
+        if not auth.is_service and user_id != room.creator_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the room creator can generate options",
+            )
+        if room.flow_type != "custom" or room.status != "active":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is not in custom generation mode")
+        if self.openrouter_generator is None or not self.openrouter_generator.enabled:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="OpenRouter is not configured")
+        if len(room.custom_preferences or []) < 2:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Both participants must submit their prompts first")
+        has_free_generation = await self._room_has_free_custom_generation(room_id)
+        if self._custom_payment_required(room, has_free_generation=has_free_generation) and room.custom_paid_at is None:
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Custom generation requires payment")
+
+        participants = await self.room_repository.get_room_participants(room_id)
+        participant_name_by_id = {participant_id: name for participant_id, name in participants}
+        prompts = [
+            {
+                "name": participant_name_by_id.get(int(item["user_id"]), f"Participant {item['user_id']}"),
+                "text": str(item["prompt"]),
+            }
+            for item in room.custom_preferences
+        ]
+
+        room.custom_status = "generating"
+        await self.room_repository.save_room(room)
+        await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
+
+        try:
+            generated = await self.openrouter_generator.generate_options(prompts)
+        except Exception as error:
+            room = await self._require_room(room_id)
+            room.custom_status = "collecting_preferences"
+            await self.room_repository.save_room(room)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to generate custom date ideas: {error}",
+            ) from error
+
+        room = await self._require_room(room_id)
+        room.custom_generation_round += 1
+        room.custom_status = "ready"
+        room.custom_options = [
+            {
+                "id": f"r{room.custom_generation_round}-o{index + 1}",
+                **option,
+            }
+            for index, option in enumerate(generated)
+        ]
+        room.custom_votes = []
+        room.custom_matched_option = None
+        room.matched_at = None
+        room.match_revealed_at = None
+        await self.room_repository.save_room(room)
+        await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
+        return await self._room_response(room_id)
+
+    async def vote_custom_option(
+        self,
+        room_id: UUID,
+        request: CustomVoteRequest,
+        auth: AuthContext,
+    ) -> RoomResponse:
+        user_id = self._resolve_user_id(auth, request.user_id)
+        room = await self._require_room(room_id)
+        await self._require_participant(room_id, user_id)
+        if room.flow_type != "custom" or room.status != "active" or room.custom_status != "ready":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Custom options are not ready for voting")
+
+        option = next((item for item in (room.custom_options or []) if str(item["id"]) == request.option_id), None)
+        if option is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Generated option not found")
+
+        votes = [
+            vote
+            for vote in (room.custom_votes or [])
+            if not (int(vote["user_id"]) == user_id and str(vote["option_id"]) == request.option_id)
+        ]
+        votes.append(
+            {
+                "user_id": user_id,
+                "option_id": request.option_id,
+                "liked": request.liked,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        room.custom_votes = votes
+
+        option_votes = [vote for vote in votes if str(vote["option_id"]) == request.option_id and bool(vote["liked"])]
+        liked_by = {int(vote["user_id"]) for vote in option_votes}
+        if len(liked_by) >= 2:
+            room.status = "matched"
+            room.custom_status = "matched"
+            room.custom_matched_option = option
+            room.matched_idea_id = None
+            room.matched_at = datetime.now(timezone.utc)
+        else:
+            participants_count = await self.room_repository.count_room_participants(room_id)
+            all_reviewed = all(
+                len({int(vote["user_id"]) for vote in votes if str(vote["option_id"]) == str(option_item["id"])}) >= participants_count
+                for option_item in room.custom_options
+            )
+            if all_reviewed:
+                room.custom_status = "needs_refinement"
+
+        await self.room_repository.save_room(room)
+        await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
+        return await self._room_response(room_id)

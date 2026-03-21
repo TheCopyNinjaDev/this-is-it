@@ -1,7 +1,8 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class RoomCreateRequest(BaseModel):
@@ -18,12 +19,48 @@ class RoomLeaveRequest(BaseModel):
 
 class RoomStartRequest(BaseModel):
     user_id: int | None = None
+    flow_type: Literal["catalog", "custom"] = "catalog"
 
 
 class SwipeRequest(BaseModel):
     idea_id: int
     liked: bool
     user_id: int | None = None
+
+
+class CustomPreferenceRequest(BaseModel):
+    prompt: str = Field(min_length=5, max_length=1000)
+    user_id: int | None = None
+
+
+class CustomGenerateRequest(BaseModel):
+    user_id: int | None = None
+
+
+class CustomVoteRequest(BaseModel):
+    option_id: str
+    liked: bool
+    user_id: int | None = None
+
+
+class CustomPaymentValidateRequest(BaseModel):
+    user_id: int
+    payload: str
+    amount: int
+    currency: str
+
+
+class CustomPaymentConfirmRequest(BaseModel):
+    user_id: int
+    payload: str
+    amount: int
+    currency: str
+    telegram_payment_charge_id: str
+
+
+class CustomPaymentLinkResponse(BaseModel):
+    invoice_url: str
+    price_stars: int
 
 
 class ParticipantResponse(BaseModel):
@@ -50,6 +87,28 @@ class RoomMemoryResponse(BaseModel):
     postcard_url: str | None = None
 
 
+class GeneratedIdeaVoteResponse(BaseModel):
+    user_id: int
+    liked: bool
+
+
+class CustomPreferenceResponse(BaseModel):
+    user_id: int
+    name: str
+    prompt: str
+    submitted_at: datetime
+
+
+class GeneratedIdeaResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    category: str
+    vibe: str
+    reason: str
+    votes: list[GeneratedIdeaVoteResponse] = []
+
+
 class RoomResponse(BaseModel):
     id: UUID
     status: str
@@ -67,6 +126,14 @@ class RoomResponse(BaseModel):
     invite_url: str
     photo_upload_url: str | None = None
     matched_idea: DateIdeaResponse | None = None
+    matched_generated_idea: GeneratedIdeaResponse | None = None
+    flow_type: str | None = None
+    custom_status: str | None = None
+    custom_price_stars: int | None = None
+    custom_payment_required: bool = False
+    custom_payment_paid: bool = False
+    custom_preferences: list[CustomPreferenceResponse] = []
+    generated_ideas: list[GeneratedIdeaResponse] = []
 
 
 class RoomListResponse(BaseModel):

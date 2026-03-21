@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from src.schemas.user import UserCreate, UserPatch, UserResponse, UserUpdate
+from src.schemas.user import UserCreate, UserListItemResponse, UserPatch, UserResponse, UserUpdate
 from src.services.user_service import UserService
 
 from src.api.deps import(
@@ -33,6 +33,14 @@ async def get_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     return user
+
+
+@router.get("", response_model=list[UserListItemResponse])
+async def list_users(
+    service: UserService = Depends(get_user_service),
+    _: None = Depends(require_bearer_token),
+) -> list[UserListItemResponse]:
+    return await service.list_active_users()
 
 
 @router.put("/{user_id}", response_model=UserResponse)
