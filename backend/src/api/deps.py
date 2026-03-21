@@ -72,10 +72,12 @@ async def get_room_service(
             api_key=settings.OPENROUTER_API_KEY.get_secret_value() if settings.OPENROUTER_API_KEY else None,
             model=settings.OPENROUTER_MODEL,
             base_url=settings.OPENROUTER_BASE_URL,
+            proxy_url=settings.TELEGRAM_PROXY_URL,
         ),
         telegram_billing=TelegramBillingService(
             bot_token=settings.TELEGRAM_BOT_TOKEN.get_secret_value(),
             bot_username=settings.TELEGRAM_BOT_USERNAME,
+            proxy_url=settings.TELEGRAM_PROXY_URL,
         ),
     )
 

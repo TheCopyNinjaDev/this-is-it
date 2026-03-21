@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 
 class OpenRouterDateGenerator:
-    def __init__(self, *, api_key: str | None, model: str, base_url: str) -> None:
+    def __init__(self, *, api_key: str | None, model: str, base_url: str, proxy_url: str | None = None) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self.proxy_url = proxy_url
 
     @property
     def enabled(self) -> bool:
@@ -58,7 +62,7 @@ class OpenRouterDateGenerator:
             f"- Use {target_language} for title, description, category, vibe, and reason.\n"
         )
 
-        async with httpx.AsyncClient(timeout=45.0) as client:
+        async with httpx.AsyncClient(timeout=45.0, proxy=self.proxy_url) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers={
@@ -75,6 +79,7 @@ class OpenRouterDateGenerator:
                 },
             )
             response.raise_for_status()
+            logger.info("OpenRouter generation request completed via proxy=%s", bool(self.proxy_url))
 
         payload = response.json()
         content = payload["choices"][0]["message"]["content"]

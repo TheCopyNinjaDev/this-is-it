@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +20,8 @@ class Settings(BaseSettings):
     telegram_bot_username: str | None = None
     telegram_mini_app_short_name: str | None = None
     broadcast_codeword: str | None = None
+    telegram_proxy: str | None = Field(default=None, validation_alias=AliasChoices("TELEGRAM_PROXY", "BOT_PROXY"))
+    telegram_proxy_type: str = "socks5"
     s3_key: str | None = None
     s3_secret_key: str | None = None
     s3_bucket_name: str | None = None
@@ -35,7 +38,24 @@ class Settings(BaseSettings):
     def apply_backend_defaults(self) -> "Settings":
         if self.backend_bearer_token is None:
             self.backend_bearer_token = self.bot_token
+        if self.telegram_proxy:
+            _ = self.telegram_proxy_url
         return self
+
+    @property
+    def telegram_proxy_url(self) -> str | None:
+        if not self.telegram_proxy:
+            return None
+        if "://" in self.telegram_proxy:
+            return self.telegram_proxy
+
+        parts = self.telegram_proxy.split(":", 3)
+        if len(parts) != 4:
+            raise ValueError("TELEGRAM_PROXY must be in format IP:PORT:LOGIN:PASSWORD")
+
+        host, port, username, password = parts
+        scheme = "socks5" if self.telegram_proxy_type.lower().startswith("socks") else "http"
+        return f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
 
 
 @lru_cache

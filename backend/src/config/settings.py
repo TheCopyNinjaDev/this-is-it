@@ -1,7 +1,8 @@
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pathlib import Path
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from urllib.parse import quote
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
@@ -32,6 +33,8 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: SecretStr | None = None
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "qwen/qwen3-30b-a3b"
+    TELEGRAM_PROXY: str | None = None
+    TELEGRAM_PROXY_TYPE: str = "socks5"
 
     @property
     def DATABASE_URL_asyncpg(self) -> str:
@@ -44,6 +47,27 @@ class Settings(BaseSettings):
     @property
     def JWT_SECRET(self) -> SecretStr:
         return self.JWT_SECRET_KEY or self.TELEGRAM_BOT_TOKEN
+
+    @property
+    def TELEGRAM_PROXY_URL(self) -> str | None:
+        if not self.TELEGRAM_PROXY:
+            return None
+        if "://" in self.TELEGRAM_PROXY:
+            return self.TELEGRAM_PROXY
+
+        parts = self.TELEGRAM_PROXY.split(":", 3)
+        if len(parts) != 4:
+            raise ValueError("TELEGRAM_PROXY must be in format IP:PORT:LOGIN:PASSWORD")
+
+        host, port, username, password = parts
+        scheme = "socks5" if self.TELEGRAM_PROXY_TYPE.lower().startswith("socks") else "http"
+        return f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+
+    @model_validator(mode="after")
+    def validate_proxy_settings(self) -> "Settings":
+        if self.TELEGRAM_PROXY:
+            _ = self.TELEGRAM_PROXY_URL
+        return self
 
 
     model_config = SettingsConfigDict(

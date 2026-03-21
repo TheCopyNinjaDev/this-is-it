@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -21,7 +22,8 @@ from storage import BotObjectStorage, build_memory_keys, create_postcard
 
 
 settings = get_settings()
-bot = Bot(token=settings.bot_token)
+bot_session = AiohttpSession(proxy=settings.telegram_proxy_url) if settings.telegram_proxy_url else AiohttpSession()
+bot = Bot(token=settings.bot_token, session=bot_session)
 dp = Dispatcher()
 from api import BackendClient
 
