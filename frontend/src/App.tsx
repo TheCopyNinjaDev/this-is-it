@@ -1781,6 +1781,7 @@ function App() {
               <label className="prompt-field">
                 <span className="eyebrow">Твой запрос</span>
                 <textarea
+                  className="prompt-field__input"
                   value={customPrompt}
                   onChange={(event) => setCustomPrompt(event.target.value)}
                   placeholder="Например: хочется что-то уютное вечером, без громких мест, с вином и красивым маршрутом"
