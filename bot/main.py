@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from contextlib import suppress
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from aiohttp import ClientError
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.filters import CommandObject, CommandStart
+from aiogram.exceptions import TelegramNetworkError
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery
@@ -18,12 +21,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import httpx
 
 from config import get_settings
+from proxy_manager import ProxyPool
 from storage import BotObjectStorage, build_memory_keys, create_postcard
 
 
 settings = get_settings()
-bot_session = AiohttpSession(proxy=settings.telegram_proxy_url) if settings.telegram_proxy_url else AiohttpSession()
-bot = Bot(token=settings.bot_token, session=bot_session)
 dp = Dispatcher()
 from api import BackendClient
 
@@ -35,15 +37,82 @@ storage = BotObjectStorage(
     endpoint_url=settings.s3_endpoint_url,
     region_name=settings.s3_region,
 )
+proxy_pool = ProxyPool(
+    proxy_type=settings.telegram_proxy_type,
+    storage_path=settings.telegram_proxy_pool_path,
+    probe_url=f"https://api.telegram.org/bot{settings.bot_token}/getMe",
+    initial_proxy=settings.telegram_proxy,
+)
+bot: Bot | None = None
+polling_restart_requested = False
 
 
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
 
 
+class ProxyUploadState(StatesGroup):
+    waiting_for_source = State()
+
+
 broadcast_drafts: dict[int, dict[str, int | str]] = {}
 broadcast_media_group_buffers: dict[str, dict[str, Any]] = {}
 broadcast_media_group_tasks: dict[str, asyncio.Task[None]] = {}
+
+
+def build_bot(proxy_url: str | None) -> Bot:
+    session = AiohttpSession(proxy=proxy_url) if proxy_url else AiohttpSession()
+    return Bot(token=settings.bot_token, session=session)
+
+
+def active_bot() -> Bot:
+    if bot is None:
+        raise RuntimeError("Telegram bot is not initialized")
+    return bot
+
+
+def is_network_error(error: Exception) -> bool:
+    if isinstance(error, (TelegramNetworkError, ClientError, OSError, asyncio.TimeoutError)):
+        return True
+    cause = error.__cause__
+    if cause is None:
+        return False
+    return is_network_error(cause)
+
+
+async def request_polling_restart() -> None:
+    global polling_restart_requested
+    polling_restart_requested = True
+    with suppress(RuntimeError):
+        await dp.stop_polling()
+
+
+async def read_proxy_source(message: Message) -> str | None:
+    current_bot = active_bot()
+    if message.document is not None:
+        filename = (message.document.file_name or "").lower()
+        mime_type = (message.document.mime_type or "").lower()
+        if filename and not filename.endswith(".txt") and mime_type != "text/plain":
+            raise ValueError("Нужен `.txt` файл со списком прокси")
+
+        telegram_file = await current_bot.get_file(message.document.file_id)
+        buffer = io.BytesIO()
+        await current_bot.download_file(telegram_file.file_path, destination=buffer)
+        try:
+            return buffer.getvalue().decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("Не удалось прочитать файл как UTF-8 текст") from error
+
+    source_text = (message.text or "").strip()
+    if source_text.startswith("http://") or source_text.startswith("https://"):
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            response = await client.get(source_text)
+            response.raise_for_status()
+            return response.text
+
+    if source_text:
+        return source_text
+    return None
 
 
 def start_keyboard() -> InlineKeyboardBuilder:
@@ -74,6 +143,7 @@ async def send_broadcast_preview(
     source_chat_id: int,
     message_ids: list[int],
 ) -> None:
+    current_bot = active_bot()
     draft_id = min(message_ids)
     broadcast_drafts[draft_id] = {
         "chat_id": source_chat_id,
@@ -82,19 +152,19 @@ async def send_broadcast_preview(
     }
 
     if len(message_ids) == 1:
-        await bot.copy_message(
+        await current_bot.copy_message(
             chat_id=owner_chat_id,
             from_chat_id=source_chat_id,
             message_id=message_ids[0],
         )
     else:
-        await bot.copy_messages(
+        await current_bot.copy_messages(
             chat_id=owner_chat_id,
             from_chat_id=source_chat_id,
             message_ids=message_ids,
         )
 
-    await bot.send_message(
+    await current_bot.send_message(
         chat_id=owner_chat_id,
         text="Это предпросмотр рассылки. Отправить всем пользователям или отменить?",
         reply_markup=broadcast_confirmation_keyboard(draft_id),
@@ -207,6 +277,44 @@ async def begin_broadcast(message: Message, state: FSMContext) -> None:
     )
 
 
+@dp.message(Command("setsecretproxy"))
+async def begin_proxy_upload(message: Message, state: FSMContext) -> None:
+    await state.set_state(ProxyUploadState.waiting_for_source)
+    await message.answer(
+        "Пришли `.txt` файл со списком прокси или ссылку на такой файл. "
+        "Я проверю прокси по очереди и переключу бота на первый рабочий."
+    )
+
+
+@dp.message(ProxyUploadState.waiting_for_source)
+async def handle_proxy_upload(message: Message, state: FSMContext) -> None:
+    if message.from_user is None:
+        return
+
+    try:
+        proxy_source = await read_proxy_source(message)
+        if proxy_source is None:
+            await message.answer("Пришли `.txt` файл, ссылку на файл или текстовый список прокси.")
+            return
+
+        previous_proxy_url = proxy_pool.active_proxy_url
+        active_proxy, total_count = await proxy_pool.install_from_text(proxy_source)
+    except ValueError as error:
+        await message.answer(str(error))
+        return
+    except httpx.HTTPError as error:
+        await message.answer(f"Не удалось загрузить список прокси: {error}")
+        return
+
+    await state.clear()
+    await message.answer(
+        f"Загрузил {total_count} прокси. Рабочий найден: {active_proxy.short(settings.telegram_proxy_type)}."
+    )
+
+    if proxy_pool.active_proxy_url != previous_proxy_url:
+        await request_polling_restart()
+
+
 @dp.message(BroadcastState.waiting_for_message)
 async def capture_broadcast_message(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
@@ -247,6 +355,7 @@ async def capture_broadcast_message(message: Message, state: FSMContext) -> None
 async def handle_broadcast_callback(callback: CallbackQuery) -> None:
     if callback.from_user is None or callback.data is None:
         return
+    current_bot = active_bot()
 
     _, action, draft_id_text = callback.data.split(":", 2)
     if not draft_id_text.isdigit():
@@ -282,13 +391,13 @@ async def handle_broadcast_callback(callback: CallbackQuery) -> None:
         user_id = int(user["id"])
         try:
             if len(message_ids) == 1:
-                await bot.copy_message(
+                await current_bot.copy_message(
                     chat_id=user_id,
                     from_chat_id=int(draft["chat_id"]),
                     message_id=message_ids[0],
                 )
             else:
-                await bot.copy_messages(
+                await current_bot.copy_messages(
                     chat_id=user_id,
                     from_chat_id=int(draft["chat_id"]),
                     message_ids=message_ids,
@@ -310,6 +419,7 @@ async def handle_broadcast_callback(callback: CallbackQuery) -> None:
 async def handle_photo(message: Message) -> None:
     if message.from_user is None or not message.photo:
         return
+    current_bot = active_bot()
 
     if not storage.enabled:
         await message.answer("S3 не настроен. Добавь S3_KEY, S3_SECRET_KEY и S3_BUCKET_NAME.")
@@ -324,9 +434,9 @@ async def handle_photo(message: Message) -> None:
         raise
 
     largest_photo = message.photo[-1]
-    telegram_file = await bot.get_file(largest_photo.file_id)
+    telegram_file = await current_bot.get_file(largest_photo.file_id)
     buffer = io.BytesIO()
-    await bot.download_file(telegram_file.file_path, destination=buffer)
+    await current_bot.download_file(telegram_file.file_path, destination=buffer)
     photo_bytes = buffer.getvalue()
 
     photo_key, postcard_key = build_memory_keys(target["room_id"], message.from_user.id)
@@ -357,9 +467,10 @@ async def handle_photo(message: Message) -> None:
 
 @dp.pre_checkout_query()
 async def handle_pre_checkout(query: PreCheckoutQuery) -> None:
+    current_bot = active_bot()
     room_id = parse_custom_payment_payload(query.invoice_payload)
     if room_id is None:
-        await bot.answer_pre_checkout_query(query.id, ok=False, error_message="Не удалось распознать платёж.")
+        await current_bot.answer_pre_checkout_query(query.id, ok=False, error_message="Не удалось распознать платёж.")
         return
 
     try:
@@ -371,14 +482,14 @@ async def handle_pre_checkout(query: PreCheckoutQuery) -> None:
             currency=query.currency,
         )
     except Exception:
-        await bot.answer_pre_checkout_query(
+        await current_bot.answer_pre_checkout_query(
             query.id,
             ok=False,
             error_message="Проверка платежа не прошла. Попробуйте ещё раз чуть позже.",
         )
         return
 
-    await bot.answer_pre_checkout_query(query.id, ok=True)
+    await current_bot.answer_pre_checkout_query(query.id, ok=True)
 
 
 @dp.message(lambda message: bool(message.successful_payment))
@@ -404,12 +515,39 @@ async def handle_successful_payment(message: Message) -> None:
 
 
 async def main() -> None:
+    global bot
+    global polling_restart_requested
+
     logging.basicConfig(level=logging.INFO)
+    await proxy_pool.load()
     try:
-        await dp.start_polling(bot)
+        while True:
+            polling_restart_requested = False
+            current_proxy = await proxy_pool.ensure_active_proxy()
+            bot = build_bot(current_proxy.url(settings.telegram_proxy_type) if current_proxy is not None else None)
+
+            try:
+                await dp.start_polling(bot)
+            except Exception as error:
+                if not is_network_error(error):
+                    raise
+
+                logging.warning("Telegram polling failed via proxy. Trying next proxy: %s", error)
+                rotated_proxy = await proxy_pool.rotate_after_failure()
+                if rotated_proxy is None:
+                    logging.error("No working Telegram proxies available. Retrying in 5 seconds.")
+                    await asyncio.sleep(5)
+                continue
+            finally:
+                if bot is not None:
+                    await bot.session.close()
+                    bot = None
+
+            if polling_restart_requested:
+                continue
+            break
     finally:
         await backend.close()
-        await bot.session.close()
 
 
 if __name__ == "__main__":

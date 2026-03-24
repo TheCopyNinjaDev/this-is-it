@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     broadcast_codeword: str | None = None
     telegram_proxy: str | None = Field(default=None, validation_alias=AliasChoices("TELEGRAM_PROXY", "BOT_PROXY"))
     telegram_proxy_type: str = "socks5"
+    telegram_proxy_pool_file: str = ".telegram_proxy_pool.txt"
     s3_key: str | None = None
     s3_secret_key: str | None = None
     s3_bucket_name: str | None = None
@@ -56,6 +57,13 @@ class Settings(BaseSettings):
         host, port, username, password = parts
         scheme = "socks5" if self.telegram_proxy_type.lower().startswith("socks") else "http"
         return f"{scheme}://{quote(username, safe='')}:{quote(password, safe='')}@{host}:{port}"
+
+    @property
+    def telegram_proxy_pool_path(self) -> Path:
+        pool_path = Path(self.telegram_proxy_pool_file)
+        if pool_path.is_absolute():
+            return pool_path
+        return PROJECT_ROOT / pool_path
 
 
 @lru_cache
