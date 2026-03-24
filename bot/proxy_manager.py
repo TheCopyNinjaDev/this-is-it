@@ -185,22 +185,17 @@ class ProxyPool:
         if not entries:
             raise ValueError("Файл не содержит ни одного прокси")
 
-        working_index: int | None = None
-        for index, entry in enumerate(entries):
-            if await self._probe(entry):
-                working_index = index
-                break
-
-        if working_index is None:
-            raise ValueError("Не нашёл ни одного рабочего прокси в загруженном списке")
-
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.write_text(raw_text.strip() + "\n", encoding="utf-8")
 
         async with self._lock:
             self._entries = entries
-            self._active_index = working_index
-            active = self._entries[working_index]
+            self._active_index = 0
+
+        await self._find_working_proxy(start_index=0)
+
+        async with self._lock:
+            active = self._entries[self._active_index if self._active_index is not None else 0]
 
         return active, len(entries)
 

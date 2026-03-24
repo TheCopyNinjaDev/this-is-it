@@ -308,7 +308,7 @@ async def handle_proxy_upload(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await message.answer(
-        f"Загрузил {total_count} прокси. Рабочий найден: {active_proxy.short(settings.telegram_proxy_type)}."
+        f"Загрузил {total_count} прокси. Активный: {active_proxy.short(settings.telegram_proxy_type)}."
     )
 
     if proxy_pool.active_proxy_url != previous_proxy_url:
