@@ -651,6 +651,8 @@ class RoomService:
             )
         if room.flow_type != "custom" or room.status != "active":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room is not in custom generation mode")
+        if room.custom_status not in ("collecting_preferences", "needs_refinement", "generation_failed"):
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Generation is not available in current room state")
         if self.openrouter_generator is None or not self.openrouter_generator.enabled:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="OpenRouter is not configured")
         if len(room.custom_preferences or []) < 2:
@@ -677,8 +679,9 @@ class RoomService:
             generated = await self.openrouter_generator.generate_options(prompts)
         except Exception as error:
             room = await self._require_room(room_id)
-            room.custom_status = "collecting_preferences"
+            room.custom_status = "generation_failed"
             await self.room_repository.save_room(room)
+            await room_connection_manager.broadcast(room_id, {"type": "room_updated"})
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Failed to generate custom date ideas: {error}",

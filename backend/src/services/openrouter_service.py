@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 class OpenRouterDateGenerator:
-    def __init__(self, *, api_key: str | None, model: str, base_url: str, proxy_url: str | None = None) -> None:
+    def __init__(self, *, api_key: str | None, model: str, base_url: str, proxy_urls: list[str | None] | None = None) -> None:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self.proxy_url = proxy_url
+        self.proxy_urls = proxy_urls if proxy_urls is not None else [None]
 
     @property
     def enabled(self) -> bool:
@@ -32,10 +32,7 @@ class OpenRouterDateGenerator:
             return "English"
         return "the same language as the input"
 
-    async def generate_options(self, prompts: Sequence[dict[str, str]]) -> list[dict[str, str]]:
-        if not self.api_key:
-            raise RuntimeError("OPENROUTER_API_KEY is not configured")
-
+    async def _call_api(self, prompts: Sequence[dict[str, str]], proxy_url: str | None) -> list[dict[str, str]]:
         target_language = self._detect_target_language(prompts)
         prompt_blocks = "\n".join(
             f"- {prompt['name']}: {prompt['text']}"
@@ -62,7 +59,7 @@ class OpenRouterDateGenerator:
             f"- Use {target_language} for title, description, category, vibe, and reason.\n"
         )
 
-        async with httpx.AsyncClient(timeout=45.0, proxy=self.proxy_url) as client:
+        async with httpx.AsyncClient(timeout=45.0, proxy=proxy_url) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers={
@@ -79,7 +76,7 @@ class OpenRouterDateGenerator:
                 },
             )
             response.raise_for_status()
-            logger.info("OpenRouter generation request completed via proxy=%s", bool(self.proxy_url))
+            logger.info("OpenRouter generation request completed via proxy=%s", bool(proxy_url))
 
         payload = response.json()
         content = payload["choices"][0]["message"]["content"]
@@ -108,3 +105,17 @@ class OpenRouterDateGenerator:
             raise RuntimeError("OpenRouter returned empty custom date fields")
 
         return normalized
+
+    async def generate_options(self, prompts: Sequence[dict[str, str]]) -> list[dict[str, str]]:
+        if not self.api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is not configured")
+
+        last_error: Exception | None = None
+        for proxy_url in self.proxy_urls:
+            try:
+                return await self._call_api(prompts, proxy_url)
+            except Exception as exc:
+                logger.warning("OpenRouter attempt failed via proxy=%s: %s", bool(proxy_url), exc)
+                last_error = exc
+
+        raise last_error or RuntimeError("All proxy attempts failed for OpenRouter generation")

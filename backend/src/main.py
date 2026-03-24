@@ -1,12 +1,14 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from src.admin import setup_admin
+from src.api.deps import require_bearer_token
 from src.api.v1.private.auth import router as auth_router
 from src.api.v1.private.room import router as room_router
 from src.api.v1.private.user import router as user_router
 from src.config.settings import settings
+from src import proxy_state
 
 app = FastAPI()
 
@@ -28,3 +30,9 @@ app.add_middleware(
 )
 
 setup_admin(app)
+
+
+@app.put("/internal/proxy-pool", dependencies=[Depends(require_bearer_token)])
+async def update_proxy_pool(urls: list[str]) -> dict:
+    proxy_state.set_proxy_urls(urls)
+    return {"count": len(urls)}

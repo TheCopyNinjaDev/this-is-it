@@ -1799,6 +1799,35 @@ function App() {
       );
     }
 
+    if (room.custom_status === "generation_failed") {
+      return (
+        <main className="shell shell--compact">
+          <section className="glass-panel glass-panel--centered">
+            <p className="eyebrow">Своё свидание</p>
+            <h1>Не удалось сгенерировать варианты</h1>
+            <p>Что-то пошло не так. Повторная попытка пройдёт через другой прокси — просто нажмите кнопку.</p>
+            {isCustomCreator ? (
+              <div className="actions">
+                <button
+                  className="action action--launch"
+                  disabled={customGenerationBusy}
+                  onClick={() => void generateCustomIdeas()}
+                >
+                  <span className="action__svg"><IconSpark /></span>
+                  <span>{customGenerationBusy ? "Повторяем попытку..." : "Попробовать снова"}</span>
+                </button>
+              </div>
+            ) : (
+              <div className="waiting-banner">
+                <span className="waiting-banner__pulse" />
+                <span>Ждём, пока создатель комнаты повторит генерацию.</span>
+              </div>
+            )}
+          </section>
+        </main>
+      );
+    }
+
     if (room.custom_status === "ready" && currentCustomOption) {
       return (
         <main className="shell shell--deck shell--compact">
@@ -1826,7 +1855,9 @@ function App() {
 
     const customStatusText =
       room.custom_status === "needs_refinement"
-          ? "Нужны уточнения"
+        ? "Нужны уточнения"
+        : room.custom_status === "generation_failed"
+          ? "Ошибка генерации"
           : "Собираем пожелания";
 
     return (

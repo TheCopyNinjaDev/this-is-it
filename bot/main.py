@@ -311,6 +311,12 @@ async def handle_proxy_upload(message: Message, state: FSMContext) -> None:
         f"Загрузил {total_count} прокси. Активный: {active_proxy.short(settings.telegram_proxy_type)}."
     )
 
+    try:
+        proxy_urls = [entry.url(settings.telegram_proxy_type) for entry in proxy_pool._entries]
+        await backend.update_proxy_pool(proxy_urls=proxy_urls)
+    except Exception as push_error:
+        LOGGER.warning("Failed to push proxy pool to backend: %s", push_error)
+
     if proxy_pool.active_proxy_url != previous_proxy_url:
         await request_polling_restart()
 

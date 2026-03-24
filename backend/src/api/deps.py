@@ -18,6 +18,7 @@ from src.services.room_service import RoomService
 from src.services.openrouter_service import OpenRouterDateGenerator
 from src.services.telegram_billing_service import TelegramBillingService
 from src.services.user_service import UserService
+from src import proxy_state
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -72,7 +73,7 @@ async def get_room_service(
             api_key=settings.OPENROUTER_API_KEY.get_secret_value() if settings.OPENROUTER_API_KEY else None,
             model=settings.OPENROUTER_MODEL,
             base_url=settings.OPENROUTER_BASE_URL,
-            proxy_url=settings.TELEGRAM_PROXY_URL,
+            proxy_urls=proxy_state.get_proxy_urls(),
         ),
         telegram_billing=TelegramBillingService(
             bot_token=settings.TELEGRAM_BOT_TOKEN.get_secret_value(),

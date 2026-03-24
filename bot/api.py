@@ -83,6 +83,10 @@ class BackendClient:
         )
         response.raise_for_status()
 
+    async def update_proxy_pool(self, *, proxy_urls: list[str]) -> None:
+        response = await self._client.put("/internal/proxy-pool", json=proxy_urls)
+        response.raise_for_status()
+
     async def confirm_custom_payment(
         self,
         *,
